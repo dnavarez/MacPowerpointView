@@ -41,6 +41,34 @@ enum Unzip {
             let msg = String(data: data, encoding: .utf8) ?? "unknown error"
             throw Error(message: "This file could not be opened as a PowerPoint archive.\n\(msg)")
         }
+
+        // Some producers store `_rels` and other directories with permissions
+        // that omit the owner execute bit (e.g. drw-rw-r--), which makes the
+        // extracted directory non-traversable so the parser can't read the parts
+        // inside. Normalize permissions on the scratch tree we own: every
+        // directory readable+traversable, every file readable.
+        normalizePermissions(at: dest, fileManager: fm)
+
         return dest
+    }
+
+    /// Grants the owner rwx on all directories and rw on all files under `url`.
+    ///
+    /// Each directory is made traversable *before* its contents are listed —
+    /// a directory stored without the execute bit can't be descended into
+    /// otherwise, so a plain enumerator would never see the files inside it.
+    private static func normalizePermissions(at url: URL, fileManager fm: FileManager) {
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return }
+
+        if isDir.boolValue {
+            try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o755)], ofItemAtPath: url.path)
+            let children = (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+            for child in children {
+                normalizePermissions(at: child, fileManager: fm)
+            }
+        } else {
+            try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: url.path)
+        }
     }
 }

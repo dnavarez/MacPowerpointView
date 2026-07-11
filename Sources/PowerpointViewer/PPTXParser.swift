@@ -20,6 +20,8 @@ final class PPTXParser {
 
     private let root: URL          // extracted archive root
     private var themeColors: [String: Color] = [:]
+    private var themeMajorFont: String?
+    private var themeMinorFont: String?
 
     /// Placeholder geometry inherited from a slide layout or master, keyed both
     /// by placeholder `idx` and by placeholder `type`.
@@ -121,14 +123,33 @@ final class PPTXParser {
         ]
 
         let themeURL = root.appendingPathComponent("ppt/theme/theme1.xml")
-        guard let doc = try? XMLDocument(contentsOf: themeURL),
-              let scheme = doc.rootElement()?.firstDescendant(localName: "clrScheme") else { return }
+        guard let doc = try? XMLDocument(contentsOf: themeURL) else { return }
 
-        for child in scheme.children?.compactMap({ $0 as? XMLElement }) ?? [] {
-            let name = child.localName ?? ""
-            if let clr = colorFromContainer(child) {
-                themeColors[name] = clr
+        if let scheme = doc.rootElement()?.firstDescendant(localName: "clrScheme") {
+            for child in scheme.children?.compactMap({ $0 as? XMLElement }) ?? [] {
+                let name = child.localName ?? ""
+                if let clr = colorFromContainer(child) {
+                    themeColors[name] = clr
+                }
             }
+        }
+
+        // Theme fonts: runs reference them as "+mj-lt" (major) / "+mn-lt" (minor),
+        // and runs without an explicit font default to the minor font.
+        if let fontScheme = doc.rootElement()?.firstDescendant(localName: "fontScheme") {
+            themeMajorFont = fontScheme.firstChild(localName: "majorFont")?
+                .firstChild(localName: "latin").flatMap { attr($0, "typeface") }
+            themeMinorFont = fontScheme.firstChild(localName: "minorFont")?
+                .firstChild(localName: "latin").flatMap { attr($0, "typeface") }
+        }
+    }
+
+    /// Resolves theme font placeholders; nil (no explicit font) → theme minor font.
+    private func themeFontName(_ name: String?) -> String? {
+        switch name {
+        case nil, "+mn-lt": return themeMinorFont
+        case "+mj-lt": return themeMajorFont
+        default: return name
         }
     }
 
@@ -178,32 +199,265 @@ final class PPTXParser {
                 elements.append(contentsOf: inheritedElements(fromPart: masterPath))
             }
             if let layoutPath = context.layoutPath {
-                elements.append(contentsOf: inheritedElements(fromPart: layoutPath))
+                // Skip layout pictures that duplicate a master picture exactly
+                // (same media file, same frame) — common when a layout re-places
+                // the master's watermark/overlay.
+                let existing = elements.compactMap { el -> (URL, CGRect)? in
+                    if case .image(let p) = el { return (p.imageURL, p.frame) }
+                    return nil
+                }
+                for el in inheritedElements(fromPart: layoutPath) {
+                    if case .image(let p) = el,
+                       existing.contains(where: { $0.0 == p.imageURL && $0.1 == p.frame }) {
+                        continue
+                    }
+                    elements.append(el)
+                }
             }
         }
         if let spTree = sldRoot.firstDescendant(localName: "spTree") {
             for node in spTree.children?.compactMap({ $0 as? XMLElement }) ?? [] {
                 switch node.localName {
-                case "sp":
-                    if let el = parseShape(node, context: context) { elements.append(el) }
+                case "sp", "cxnSp":
+                    if let el = parseShape(node, context: context, rels: rels, partDir: partDir) {
+                        elements.append(el)
+                    }
                 case "pic":
                     if let el = parsePicture(node, rels: rels, partDir: partDir) {
                         elements.append(.image(el))
                     }
+                case "graphicFrame":
+                    if let el = parseTable(node) {
+                        elements.append(.table(el))
+                    }
+                case "grpSp":
+                    elements.append(contentsOf: parseGroup(node, context: context, rels: rels, partDir: partDir))
                 default:
                     break
                 }
             }
         }
 
-        return Slide(index: index, background: background, elements: elements)
+        return Slide(index: index, background: background, elements: elements,
+                     buildSteps: parseBuildSteps(sldRoot),
+                     hasTransition: sldRoot.firstChild(localName: "transition") != nil
+                        || sldRoot.firstDescendant(localName: "transition") != nil)
     }
 
-    private func parseShape(_ sp: XMLElement, context: SlideContext) -> SlideElement? {
+    // MARK: - Animation timing
+
+    /// Extracts click-triggered build steps from a slide's `p:timing` tree.
+    ///
+    /// The main sequence's top-level `par` nodes each correspond to one click.
+    /// Within a click group, every effect node (`cTn` carrying a `presetClass`,
+    /// or a `set`-visibility behavior) contributes its target shapes: entrance
+    /// effects reveal, exit effects hide. Emphasis/motion effects are ignored —
+    /// their shapes are visible throughout. A group containing only
+    /// with/after-previous effects merges into the preceding click.
+    private func parseBuildSteps(_ sldRoot: XMLElement) -> [BuildStep] {
+        guard let timing = sldRoot.firstChild(localName: "timing")
+                ?? sldRoot.firstDescendant(localName: "timing") else { return [] }
+
+        // The main sequence (fall back to the first seq if unmarked).
+        let seqs = timing.descendants(localName: "seq")
+        let mainSeq = seqs.first(where: { seq in
+            seq.firstChild(localName: "cTn").map { attr($0, "nodeType") == "mainSeq" } ?? false
+        }) ?? seqs.first
+        guard let mainSeq,
+              let seqCTn = mainSeq.firstChild(localName: "cTn"),
+              let clickList = seqCTn.firstChild(localName: "childTnLst") else { return [] }
+
+        var steps: [BuildStep] = []
+        for clickPar in clickList.children?.compactMap({ $0 as? XMLElement }).filter({ $0.localName == "par" }) ?? [] {
+            var step = BuildStep()
+            var hasClickTrigger = false
+
+            for ctn in clickPar.descendants(localName: "cTn") {
+                let nodeType = attr(ctn, "nodeType")
+                if nodeType == "clickEffect" || nodeType == "clickPar" { hasClickTrigger = true }
+
+                // Effect nodes: presetClass tells entrance vs exit. When absent,
+                // fall back to the set-visibility behavior's target value.
+                let presetClass = attr(ctn, "presetClass")
+                guard presetClass != nil || nodeType == "clickEffect"
+                        || nodeType == "withEffect" || nodeType == "afterEffect" else { continue }
+
+                let targets = ctn.descendants(localName: "spTgt")
+                guard !targets.isEmpty else { continue }
+
+                // Entrance vs exit: presetClass when present, else the
+                // set-visibility behavior's target value; default entrance.
+                let isEntrance: Bool
+                switch presetClass {
+                case "entr": isEntrance = true
+                case "exit": isEntrance = false
+                case nil:
+                    if let setEl = ctn.descendants(localName: "set").first,
+                       let val = setEl.firstDescendant(localName: "strVal").flatMap({ attr($0, "val") }) {
+                        isEntrance = (val != "hidden")
+                    } else {
+                        isEntrance = true
+                    }
+                default:
+                    continue // emphasis / motion paths don't change visibility
+                }
+
+                for tgt in targets {
+                    guard let spid = attr(tgt, "spid") else { continue }
+                    // A pRg child means the effect targets a paragraph range of
+                    // the shape ("build by paragraph"), not the whole shape.
+                    if isEntrance, let pRg = tgt.firstDescendant(localName: "pRg"),
+                       let st = Int(attr(pRg, "st") ?? ""), let end = Int(attr(pRg, "end") ?? ""), st <= end {
+                        step.paragraphReveals[spid, default: []].formUnion(st...end)
+                    } else if isEntrance {
+                        step.reveals.insert(spid)
+                    } else {
+                        step.hides.insert(spid)
+                    }
+                }
+            }
+
+            guard !step.reveals.isEmpty || !step.hides.isEmpty || !step.paragraphReveals.isEmpty else { continue }
+            if !hasClickTrigger, !steps.isEmpty {
+                // With/after-previous only: runs together with the previous click.
+                steps[steps.count - 1].reveals.formUnion(step.reveals)
+                steps[steps.count - 1].hides.formUnion(step.hides)
+                for (spid, paras) in step.paragraphReveals {
+                    steps[steps.count - 1].paragraphReveals[spid, default: []].formUnion(paras)
+                }
+            } else {
+                steps.append(step)
+            }
+        }
+        return steps
+    }
+
+    // MARK: - Groups
+
+    /// Parses a `grpSp`, mapping child coordinates from the group's child space
+    /// (`chOff`/`chExt`) into slide space (`off`/`ext`). Nested groups recurse.
+    /// Group-level rotation is not composed onto children (rare in practice).
+    private func parseGroup(_ grp: XMLElement, context: SlideContext,
+                            rels: [String: String], partDir: String) -> [SlideElement] {
+        var children: [SlideElement] = []
+        for node in grp.children?.compactMap({ $0 as? XMLElement }) ?? [] {
+            switch node.localName {
+            case "sp", "cxnSp":
+                if let el = parseShape(node, context: context, rels: rels, partDir: partDir) {
+                    children.append(el)
+                }
+            case "pic":
+                if let el = parsePicture(node, rels: rels, partDir: partDir) {
+                    children.append(.image(el))
+                }
+            case "graphicFrame":
+                if let el = parseTable(node) { children.append(.table(el)) }
+            case "grpSp":
+                children.append(contentsOf: parseGroup(node, context: context, rels: rels, partDir: partDir))
+            default:
+                break
+            }
+        }
+
+        // Child-space → slide-space transform from the group's own xfrm.
+        guard let grpSpPr = grp.firstChild(localName: "grpSpPr"),
+              let xfrm = grpSpPr.firstChild(localName: "xfrm"),
+              let off = xfrm.firstChild(localName: "off"),
+              let ext = xfrm.firstChild(localName: "ext"),
+              let chOff = xfrm.firstChild(localName: "chOff"),
+              let chExt = xfrm.firstChild(localName: "chExt") else { return children }
+
+        let ox = Emu.toPoints(Double(attr(off, "x") ?? "0") ?? 0)
+        let oy = Emu.toPoints(Double(attr(off, "y") ?? "0") ?? 0)
+        let ew = Emu.toPoints(Double(attr(ext, "cx") ?? "0") ?? 0)
+        let eh = Emu.toPoints(Double(attr(ext, "cy") ?? "0") ?? 0)
+        let cx = Emu.toPoints(Double(attr(chOff, "x") ?? "0") ?? 0)
+        let cy = Emu.toPoints(Double(attr(chOff, "y") ?? "0") ?? 0)
+        let cw = Emu.toPoints(Double(attr(chExt, "cx") ?? "0") ?? 0)
+        let ch = Emu.toPoints(Double(attr(chExt, "cy") ?? "0") ?? 0)
+        let sx = cw > 0 ? ew / cw : 1
+        let sy = ch > 0 ? eh / ch : 1
+
+        func map(_ r: CGRect) -> CGRect {
+            CGRect(x: (r.minX - cx) * sx + ox,
+                   y: (r.minY - cy) * sy + oy,
+                   width: r.width * sx,
+                   height: r.height * sy)
+        }
+
+        return children.map { el in
+            switch el {
+            case .text(var t):
+                t.frame = map(t.frame)
+                return .text(t)
+            case .image(var p):
+                p.frame = map(p.frame)
+                return .image(p)
+            case .shape(var sh):
+                sh.frame = map(sh.frame)
+                sh.text?.frame = sh.frame
+                return .shape(sh)
+            case .table(var tb):
+                tb.frame = map(tb.frame)
+                return .table(tb)
+            }
+        }
+    }
+
+    // MARK: - Tables
+
+    /// Parses an `a:tbl` inside a `p:graphicFrame`. The frame's `ext` is often
+    /// stale in exported decks, so the table's size is computed from its grid
+    /// column widths and row heights instead.
+    private func parseTable(_ frameEl: XMLElement) -> TableElement? {
+        guard let tbl = frameEl.firstDescendant(localName: "tbl") else { return nil }
+        let origin = xfrmFrame(in: frameEl)?.origin ?? .zero
+
+        var columnWidths: [Double] = []
+        if let grid = tbl.firstChild(localName: "tblGrid") {
+            for col in grid.children?.compactMap({ $0 as? XMLElement }).filter({ $0.localName == "gridCol" }) ?? [] {
+                columnWidths.append(Emu.toPoints(Double(attr(col, "w") ?? "0") ?? 0))
+            }
+        }
+
+        var rows: [TableRow] = []
+        for tr in tbl.children?.compactMap({ $0 as? XMLElement }).filter({ $0.localName == "tr" }) ?? [] {
+            let height = Emu.toPoints(Double(attr(tr, "h") ?? "0") ?? 0)
+            var cells: [TableCell] = []
+            for tc in tr.children?.compactMap({ $0 as? XMLElement }).filter({ $0.localName == "tc" }) ?? [] {
+                // Merged-away continuation cells are skipped.
+                if attr(tc, "hMerge") == "1" || attr(tc, "vMerge") == "1" { continue }
+                var cell = TableCell(paragraphs: [], fill: nil)
+                cell.gridSpan = max(1, Int(attr(tc, "gridSpan") ?? "1") ?? 1)
+                if let txBody = tc.firstChild(localName: "txBody") {
+                    let defaults = listStyleDefaults(txBody.firstChild(localName: "lstStyle"))
+                    cell.paragraphs = parseParagraphs(txBody, defaultSize: 14, levelDefaults: defaults)
+                }
+                if let tcPr = tc.firstChild(localName: "tcPr") {
+                    cell.fill = fillColor(in: tcPr)
+                    cell.insets = textInsets(from: tcPr, prefix: true)
+                }
+                cells.append(cell)
+            }
+            rows.append(TableRow(height: height, cells: cells))
+        }
+        guard !rows.isEmpty, !columnWidths.isEmpty else { return nil }
+
+        let size = CGSize(width: columnWidths.reduce(0, +),
+                          height: rows.map(\.height).reduce(0, +))
+        let shapeID = frameEl.firstDescendant(localName: "cNvPr").flatMap { attr($0, "id") }
+        return TableElement(shapeID: shapeID, frame: CGRect(origin: origin, size: size),
+                            columnWidths: columnWidths, rows: rows)
+    }
+
+    private func parseShape(_ sp: XMLElement, context: SlideContext,
+                            rels: [String: String] = [:], partDir: String = "") -> SlideElement? {
         let spPr = sp.firstDescendant(localName: "spPr")
+        let shapeID = sp.firstDescendant(localName: "cNvPr").flatMap { attr($0, "id") }
         let ph = placeholderInfo(sp)
         // Own geometry first, then inherit from layout, then master.
         let frame = xfrmFrame(in: spPr) ?? inheritedFrame(for: ph, context: context) ?? .zero
+        let (rotation, flipH, flipV) = xfrmOrientation(in: spPr)
         let defaultSize = defaultFontSize(for: ph, context: context)
 
         // Text body (may be present on plain text boxes and on autoshapes).
@@ -212,27 +466,55 @@ final class PPTXParser {
             let levelDefaults = listStyleDefaults(txBody.firstChild(localName: "lstStyle"))
             let paragraphs = parseParagraphs(txBody, defaultSize: defaultSize, levelDefaults: levelDefaults)
             if !paragraphs.isEmpty && paragraphs.contains(where: { !$0.runs.isEmpty }) {
-                textBox = TextBox(frame: frame, paragraphs: paragraphs, fill: nil)
+                textBox = TextBox(shapeID: shapeID, frame: frame, paragraphs: paragraphs, fill: nil,
+                                  verticalAnchor: verticalAnchor(in: txBody),
+                                  insets: textInsets(from: txBody.firstChild(localName: "bodyPr"), prefix: false))
             }
         }
 
-        let fillC = spPr.flatMap { fillColor(in: $0) }
+        var fill = spPr.flatMap { parseFill(in: $0, rels: rels, partDir: partDir) }
         let geom = geometry(in: spPr)
-        let stroke = strokeStyle(in: spPr)
+        var stroke = strokeStyle(in: spPr)
+
+        // Themed shapes carry no explicit fill/line; a <p:style> element points
+        // at theme colors instead (fillRef / lnRef).
+        if let style = sp.firstChild(localName: "style") {
+            if fill == nil, spPr?.firstChild(localName: "noFill") == nil,
+               let fillRef = style.firstChild(localName: "fillRef"),
+               (Int(attr(fillRef, "idx") ?? "0") ?? 0) > 0,
+               let c = colorFromContainer(fillRef) {
+                fill = .solid(c)
+            }
+            if stroke == nil, spPr?.firstChild(localName: "ln")?.firstChild(localName: "noFill") == nil,
+               let lnRef = style.firstChild(localName: "lnRef"),
+               (Int(attr(lnRef, "idx") ?? "0") ?? 0) > 0,
+               let c = colorFromContainer(lnRef) {
+                stroke = StrokeInfo(color: c, width: 1)
+            }
+        }
+
+        // Connectors/lines with no visible style still need a stroke to exist.
+        if geom == .line, stroke == nil {
+            stroke = StrokeInfo(color: .black, width: 1)
+        }
 
         // A shape with a preset geometry + fill/stroke is a drawn shape;
         // a placeholder/textbox with only text is a text element.
-        let hasVisibleShape = (fillC != nil) || (stroke != nil)
+        let hasVisibleShape = (fill != nil) || (stroke != nil)
 
         if hasVisibleShape {
             var tb = textBox
             tb?.frame = frame
             let shape = ShapeElement(
+                shapeID: shapeID,
                 frame: frame,
-                fill: fillC.map { FillStyle(color: $0) },
+                fill: fill,
                 stroke: stroke,
                 geometry: geom,
-                text: tb
+                text: tb,
+                rotation: rotation,
+                flipH: flipH,
+                flipV: flipV
             )
             return .shape(shape)
         } else if var tb = textBox {
@@ -251,7 +533,16 @@ final class PPTXParser {
         let mediaPath = resolvePath(base: partDir, target: target)
         let url = root.appendingPathComponent(mediaPath)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return PictureElement(frame: frame, imageURL: url)
+
+        // srcRect crop: attributes are in thousandths of a percent.
+        var crop = EdgeInsetsFraction.zero
+        if let blipFill = pic.firstDescendant(localName: "blipFill"),
+           let src = blipFill.firstChild(localName: "srcRect") {
+            func frac(_ name: String) -> Double { (Double(attr(src, name) ?? "0") ?? 0) / 100000.0 }
+            crop = EdgeInsetsFraction(left: frac("l"), top: frac("t"), right: frac("r"), bottom: frac("b"))
+        }
+        let shapeID = pic.firstDescendant(localName: "cNvPr").flatMap { attr($0, "id") }
+        return PictureElement(shapeID: shapeID, frame: frame, imageURL: url, crop: crop)
     }
 
     // MARK: - Text
@@ -285,6 +576,7 @@ final class PPTXParser {
     private func parseParagraphs(_ txBody: XMLElement, defaultSize: Double,
                                  levelDefaults: [Int: RunDefaults]) -> [Paragraph] {
         var result: [Paragraph] = []
+        var autoNumCounters: [Int: Int] = [:]   // level -> last value
         for p in txBody.children?.compactMap({ $0 as? XMLElement }).filter({ $0.localName == "p" }) ?? [] {
             var para = Paragraph(runs: [])
             let pPr = p.firstChild(localName: "pPr")
@@ -292,11 +584,26 @@ final class PPTXParser {
                 switch attr(pPr, "algn") {
                 case "ctr": para.alignment = .center
                 case "r": para.alignment = .trailing
+                // OOXML "just" (justified) has no SwiftUI equivalent; render leading.
                 default: para.alignment = .leading
                 }
                 para.level = Int(attr(pPr, "lvl") ?? "0") ?? 0
-                if pPr.firstChild(localName: "buChar") != nil || pPr.firstChild(localName: "buAutoNum") != nil {
-                    para.hasBullet = true
+                if let marL = Double(attr(pPr, "marL") ?? "") { para.marginLeft = Emu.toPoints(marL) }
+                if let ind = Double(attr(pPr, "indent") ?? "") { para.indent = Emu.toPoints(ind) }
+                para.spaceBefore = spacingPoints(pPr.firstChild(localName: "spcBef"))
+                para.spaceAfter = spacingPoints(pPr.firstChild(localName: "spcAft"))
+                if let lnSpc = pPr.firstChild(localName: "lnSpc"),
+                   let pct = lnSpc.firstChild(localName: "spcPct"),
+                   let v = Double(attr(pct, "val") ?? "") {
+                    para.lineSpacing = v / 100000.0
+                }
+                para.bullet = parseBullet(pPr)
+
+                // Fall back to a level-based indent when none is specified but a
+                // bullet is present, so nested bullets still step in.
+                if para.marginLeft == 0 && para.indent == 0 && para.bullet != nil {
+                    para.marginLeft = Double(para.level + 1) * 24
+                    para.indent = -18
                 }
             }
 
@@ -328,9 +635,120 @@ final class PPTXParser {
                     break
                 }
             }
+            // Resolve auto-number bullets against per-level counters.
+            if var bullet = para.bullet, let format = bullet.autoNumFormat {
+                let value = (autoNumCounters[para.level] ?? (bullet.startAt - 1)) + 1
+                autoNumCounters[para.level] = value
+                // Leaving a deeper level restarts its numbering next time.
+                for lvl in autoNumCounters.keys where lvl > para.level {
+                    autoNumCounters.removeValue(forKey: lvl)
+                }
+                bullet.glyph = autoNumberText(format: format, value: value)
+                para.bullet = bullet
+            }
+
             result.append(para)
         }
         return result
+    }
+
+    /// Text insets from `bodyPr` (lIns/tIns/rIns/bIns) or `tcPr` (marL/…), EMU.
+    private func textInsets(from element: XMLElement?, prefix: Bool) -> TextInsets {
+        var insets = TextInsets()
+        guard let element else { return insets }
+        func emu(_ name: String) -> Double? { Double(attr(element, name) ?? "").map { Emu.toPoints($0) } }
+        if prefix {   // tcPr marL/marT/marR/marB
+            if let v = emu("marL") { insets.leading = v }
+            if let v = emu("marT") { insets.top = v }
+            if let v = emu("marR") { insets.trailing = v }
+            if let v = emu("marB") { insets.bottom = v }
+        } else {      // bodyPr lIns/tIns/rIns/bIns
+            if let v = emu("lIns") { insets.leading = v }
+            if let v = emu("tIns") { insets.top = v }
+            if let v = emu("rIns") { insets.trailing = v }
+            if let v = emu("bIns") { insets.bottom = v }
+        }
+        return insets
+    }
+
+    /// Vertical anchor from a text body's `bodyPr@anchor`.
+    private func verticalAnchor(in txBody: XMLElement) -> VerticalAnchor {
+        switch txBody.firstChild(localName: "bodyPr").flatMap({ attr($0, "anchor") }) {
+        case "ctr": return .center
+        case "b": return .bottom
+        default: return .top
+        }
+    }
+
+    /// Points from an `a:spcBef`/`a:spcAft` element (`spcPts` in hundredths of a
+    /// point; `spcPct` percentages are ignored as they need the run size).
+    private func spacingPoints(_ spc: XMLElement?) -> Double {
+        guard let pts = spc?.firstDescendant(localName: "spcPts"),
+              let v = Double(attr(pts, "val") ?? "") else { return 0 }
+        return v / 100.0
+    }
+
+    /// Parses a paragraph's bullet definition. `buNone` yields no bullet; a
+    /// `buChar` is rendered in its `buFont`; `buAutoNum` becomes a simple marker.
+    private func parseBullet(_ pPr: XMLElement) -> Bullet? {
+        if pPr.firstChild(localName: "buNone") != nil { return nil }
+
+        let color = pPr.firstChild(localName: "buClr").flatMap { colorFromContainer($0) }
+        var sizePercent = 1.0
+        if let sz = pPr.firstChild(localName: "buSzPct"), let v = Double(attr(sz, "val") ?? "") {
+            sizePercent = v / 100000.0
+        }
+        let fontName = themeFontName(pPr.firstChild(localName: "buFont").flatMap { attr($0, "typeface") })
+
+        if let buChar = pPr.firstChild(localName: "buChar"), let ch = attr(buChar, "char") {
+            // Symbol-font bullets (Wingdings etc.) render as unexpected glyphs in
+            // their raw font on macOS; map them to Unicode equivalents rendered in
+            // the normal text font, matching what PowerPoint/Keynote display.
+            if let mapped = SymbolFont.unicodeBullet(char: ch, font: fontName) {
+                return Bullet(glyph: mapped, fontName: nil, color: color, sizePercent: sizePercent)
+            }
+            return Bullet(glyph: ch, fontName: fontName, color: color, sizePercent: sizePercent)
+        }
+        if let auto = pPr.firstChild(localName: "buAutoNum") {
+            // Actual number text is resolved in parseParagraphs, which tracks
+            // per-level counters across sibling paragraphs.
+            return Bullet(glyph: "", fontName: nil, color: color, sizePercent: sizePercent,
+                          autoNumFormat: attr(auto, "type") ?? "arabicPeriod",
+                          startAt: Int(attr(auto, "startAt") ?? "1") ?? 1)
+        }
+        return nil
+    }
+
+    /// Formats an auto-number bullet value per the OOXML `buAutoNum` scheme.
+    private func autoNumberText(format: String, value: Int) -> String {
+        func letters(_ n: Int) -> String {
+            var n = n, out = ""
+            while n > 0 {
+                n -= 1
+                out = String(UnicodeScalar(65 + n % 26)!) + out
+                n /= 26
+            }
+            return out
+        }
+        func roman(_ n: Int) -> String {
+            let table: [(Int, String)] = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+                                          (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                                          (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+            var n = n, out = ""
+            for (v, sym) in table { while n >= v { out += sym; n -= v } }
+            return out
+        }
+        let core: String
+        if format.hasPrefix("alphaLc") { core = letters(value).lowercased() }
+        else if format.hasPrefix("alphaUc") { core = letters(value) }
+        else if format.hasPrefix("romanLc") { core = roman(value).lowercased() }
+        else if format.hasPrefix("romanUc") { core = roman(value) }
+        else { core = String(value) }
+
+        if format.hasSuffix("ParenR") { return core + ")" }
+        if format.hasSuffix("ParenBoth") { return "(" + core + ")" }
+        if format.hasSuffix("Plain") { return core }
+        return core + "."   // *Period and default
     }
 
     private func parseRun(_ r: XMLElement, defaults: RunDefaults) -> TextRun? {
@@ -346,17 +764,22 @@ final class PPTXParser {
         if let c = defaults.color { run.color = c }
         run.fontName = defaults.fontName
         run.shadow = defaults.shadow
-        guard let rPr else { return run }
+        guard let rPr else {
+            run.fontName = themeFontName(run.fontName)
+            return run
+        }
         if let szStr = attr(rPr, "sz"), let sz = Double(szStr) {
             run.fontSize = sz / 100.0
         }
         if let b = attr(rPr, "b") { run.bold = (b == "1") }
         if let i = attr(rPr, "i") { run.italic = (i == "1") }
         if let u = attr(rPr, "u"), u != "none" { run.underline = true }
+        if let strike = attr(rPr, "strike"), strike != "noStrike" { run.strikethrough = true }
         if let c = fillColor(in: rPr) { run.color = c }
         if let latin = rPr.firstChild(localName: "latin"), let tf = attr(latin, "typeface") {
             run.fontName = tf
         }
+        run.fontName = themeFontName(run.fontName)
         return run
     }
 
@@ -495,13 +918,17 @@ final class PPTXParser {
             let partDir = (partPath as NSString).deletingLastPathComponent
             for node in spTree.children?.compactMap({ $0 as? XMLElement }) ?? [] {
                 switch node.localName {
-                case "sp":
+                case "sp", "cxnSp":
                     guard node.firstDescendant(localName: "ph") == nil else { continue }
-                    if let el = parseShape(node, context: SlideContext()) { elements.append(el) }
+                    if let el = parseShape(node, context: SlideContext(), rels: rels, partDir: partDir) {
+                        elements.append(el)
+                    }
                 case "pic":
                     if let el = parsePicture(node, rels: rels, partDir: partDir) {
                         elements.append(.image(el))
                     }
+                case "grpSp":
+                    elements.append(contentsOf: parseGroup(node, context: SlideContext(), rels: rels, partDir: partDir))
                 default:
                     break
                 }
@@ -535,21 +962,14 @@ final class PPTXParser {
         guard let bg = element?.firstDescendant(localName: "bg"),
               let bgPr = bg.firstDescendant(localName: "bgPr") else { return nil }
 
-        // Solid color background.
-        if let color = fillColor(in: bgPr) { return .color(color) }
-
-        // Image (picture) background.
-        if let blip = bgPr.firstDescendant(localName: "blip"), let embed = relAttr(blip, "embed") {
-            let rels = loadRelationships(forPart: partPath)
-            if let target = rels[embed] {
-                let dir = (partPath as NSString).deletingLastPathComponent
-                let mediaURL = root.appendingPathComponent(resolvePath(base: dir, target: target))
-                if FileManager.default.fileExists(atPath: mediaURL.path) {
-                    return .image(mediaURL)
-                }
-            }
+        let rels = loadRelationships(forPart: partPath)
+        let dir = (partPath as NSString).deletingLastPathComponent
+        switch parseFill(in: bgPr, rels: rels, partDir: dir) {
+        case .solid(let color): return .color(color)
+        case .gradient(let stops, let angle): return .gradient(stops: stops, angle: angle)
+        case .image(let url): return .image(url)
+        case nil: return nil
         }
-        return nil
     }
 
     // MARK: - Geometry
@@ -567,13 +987,69 @@ final class PPTXParser {
                       width: Emu.toPoints(cx), height: Emu.toPoints(cy))
     }
 
+    /// Rotation (degrees) and flips from a shape's `xfrm`.
+    private func xfrmOrientation(in element: XMLElement?) -> (Double, Bool, Bool) {
+        guard let xfrm = element?.firstDescendant(localName: "xfrm") else { return (0, false, false) }
+        let rot = (Double(attr(xfrm, "rot") ?? "") ?? 0) / 60000.0
+        return (rot, attr(xfrm, "flipH") == "1", attr(xfrm, "flipV") == "1")
+    }
+
+    /// Parses a full fill (solid, gradient, or picture) from direct children of
+    /// a properties container.
+    private func parseFill(in element: XMLElement, rels: [String: String], partDir: String) -> Fill? {
+        if element.firstChild(localName: "noFill") != nil { return nil }
+        if let solid = element.firstChild(localName: "solidFill"), let c = colorFromContainer(solid) {
+            return .solid(c)
+        }
+        if let grad = element.firstChild(localName: "gradFill") {
+            var stops: [GradientStop] = []
+            for gs in grad.descendants(localName: "gs") {
+                let pos = (Double(attr(gs, "pos") ?? "0") ?? 0) / 100000.0
+                if let c = colorFromContainer(gs) {
+                    stops.append(GradientStop(position: pos, color: c))
+                }
+            }
+            stops.sort { $0.position < $1.position }
+            var angle = 90.0
+            if let lin = grad.firstChild(localName: "lin"), let ang = Double(attr(lin, "ang") ?? "") {
+                angle = ang / 60000.0
+            }
+            if stops.count >= 2 { return .gradient(stops: stops, angle: angle) }
+            if let only = stops.first { return .solid(only.color) }
+        }
+        if let blipFill = element.firstChild(localName: "blipFill"),
+           let blip = blipFill.firstDescendant(localName: "blip"),
+           let embed = relAttr(blip, "embed"),
+           let target = rels[embed] {
+            let url = root.appendingPathComponent(resolvePath(base: partDir, target: target))
+            if FileManager.default.fileExists(atPath: url.path) { return .image(url) }
+        }
+        return nil
+    }
+
     private func geometry(in spPr: XMLElement?) -> ShapeGeometry {
         guard let prst = spPr?.firstDescendant(localName: "prstGeom"),
               let name = attr(prst, "prst") else { return .rectangle }
         switch name {
-        case "rect": return .rectangle
-        case "roundRect": return .roundedRectangle
+        case "rect", "snip1Rect", "snip2SameRect", "snip2DiagRect": return .rectangle
+        case "roundRect", "round1Rect", "round2SameRect": return .roundedRectangle
         case "ellipse", "circle": return .ellipse
+        case "triangle": return .triangle
+        case "rtTriangle": return .rightTriangle
+        case "diamond": return .diamond
+        case "parallelogram": return .parallelogram
+        case "trapezoid": return .trapezoid
+        case "pentagon": return .pentagon
+        case "hexagon": return .hexagon
+        case "chevron": return .chevron
+        case "homePlate": return .homePlate
+        case "rightArrow", "arrow", "notchedRightArrow": return .arrowRight
+        case "leftArrow": return .arrowLeft
+        case "upArrow": return .arrowUp
+        case "downArrow": return .arrowDown
+        case "star5", "star4", "star6": return .star5
+        case "line", "straightConnector1", "bentConnector2", "bentConnector3",
+             "curvedConnector2", "curvedConnector3": return .line
         default: return .other
         }
     }
@@ -588,10 +1064,12 @@ final class PPTXParser {
 
     // MARK: - Color
 
-    /// Resolves a solid fill's color from a container element (spPr, rPr, ln, bgPr…).
+    /// Resolves a solid fill's color from a container element (rPr, ln, bgPr,
+    /// tcPr, defRPr…). Only direct children are considered so a nested line or
+    /// effect fill can't masquerade as the container's own fill.
     private func fillColor(in element: XMLElement) -> Color? {
         if element.firstChild(localName: "noFill") != nil { return nil }
-        guard let solid = element.firstDescendant(localName: "solidFill") else { return nil }
+        guard let solid = element.firstChild(localName: "solidFill") else { return nil }
         return colorFromContainer(solid)
     }
 
@@ -603,12 +1081,12 @@ final class PPTXParser {
         }
         if let scheme = container.firstDescendant(localName: "schemeClr"),
            let val = attr(scheme, "val") {
-            let base = themeColors[val] ?? themeColors[schemeAlias(val)] ?? .primary
+            let base = themeColors[val] ?? themeColors[schemeAlias(val)] ?? .black
             return base.withAlpha(alphaMod(scheme))
         }
         if let sys = container.firstDescendant(localName: "sysClr") {
             if let last = attr(sys, "lastClr") { return Color(hex: last) }
-            return .primary
+            return .black
         }
         return nil
     }

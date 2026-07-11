@@ -38,6 +38,7 @@ final class PresentationStore: ObservableObject {
     func startPresentation() {
         guard presentation != nil, !isPresenting else { return }
         isPresenting = true
+        buildIndex = 0
         presentationStartDate = Date()
         presentationWindow.onEnd = { [weak self] in self?.endPresentation() }
         presentationWindow.show(store: self)
@@ -57,7 +58,9 @@ final class PresentationStore: ObservableObject {
         Task {
             defer { if needsScope { url.stopAccessingSecurityScopedResource() } }
             do {
-                let root = try Unzip.extract(url)
+                // Convert legacy binary .ppt to .pptx first if needed.
+                let source = try LegacyPPT.resolve(url)
+                let root = try Unzip.extract(source)
                 let parser = PPTXParser(extractedRoot: root)
                 let pres = try parser.parse()
                 guard !pres.slides.isEmpty else {
@@ -82,19 +85,74 @@ final class PresentationStore: ObservableObject {
         }
     }
 
+    /// Number of build steps already executed on the current slide (presenting).
+    @Published var buildIndex: Int = 0
+
+    /// Shapes currently invisible on the presented slide: entrance targets whose
+    /// step hasn't run yet, plus exit targets whose step has.
+    var hiddenShapeIDs: Set<String> {
+        guard isPresenting, let slide = currentSlide, !slide.buildSteps.isEmpty else { return [] }
+        var hidden: Set<String> = []
+        for (i, step) in slide.buildSteps.enumerated() {
+            if i >= buildIndex {
+                hidden.formUnion(step.reveals)
+            } else {
+                hidden.formUnion(step.hides)
+                hidden.subtract(step.reveals)
+            }
+        }
+        return hidden
+    }
+
+    /// Paragraphs currently invisible on the presented slide, keyed by shape id —
+    /// paragraph-level entrance targets whose step hasn't run yet.
+    var hiddenParagraphs: [String: Set<Int>] {
+        guard isPresenting, let slide = currentSlide, !slide.buildSteps.isEmpty else { return [:] }
+        var hidden: [String: Set<Int>] = [:]
+        for (i, step) in slide.buildSteps.enumerated() where i >= buildIndex {
+            for (spid, paras) in step.paragraphReveals {
+                hidden[spid, default: []].formUnion(paras)
+            }
+        }
+        return hidden
+    }
+
+    var canGoNext: Bool {
+        if isPresenting, let slide = currentSlide, buildIndex < slide.buildSteps.count { return true }
+        return currentIndex < slideCount - 1
+    }
+
+    var canGoPrevious: Bool {
+        if isPresenting && buildIndex > 0 { return true }
+        return currentIndex > 0
+    }
+
     func goNext() {
+        // While presenting, a click first plays the slide's next build step.
+        if isPresenting, let slide = currentSlide, buildIndex < slide.buildSteps.count {
+            buildIndex += 1
+            return
+        }
         guard currentIndex < slideCount - 1 else { return }
         currentIndex += 1
+        buildIndex = 0
     }
 
     func goPrevious() {
+        if isPresenting, buildIndex > 0 {
+            buildIndex -= 1
+            return
+        }
         guard currentIndex > 0 else { return }
         currentIndex -= 1
+        // Landing back on a slide shows it fully built, like PowerPoint.
+        buildIndex = isPresenting ? (currentSlide?.buildSteps.count ?? 0) : 0
     }
 
     func go(to index: Int) {
         guard presentation?.slides.indices.contains(index) == true else { return }
         currentIndex = index
+        buildIndex = 0
     }
 
     private func cleanup() {

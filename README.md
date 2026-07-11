@@ -1,17 +1,24 @@
-# PowerPoint Viewer for macOS
+# SlideViewer
 
-A native macOS application that opens and displays `.pptx` presentations. It
-parses the PowerPoint Open XML (OOXML) format directly and renders slides with
-SwiftUI — no Microsoft Office, no web view, no third-party dependencies.
+**Viewer for PowerPoint & PPTX** — a native macOS application that opens and
+displays `.pptx` presentations. It parses the Open XML (OOXML) format directly
+and renders slides with SwiftUI — no Microsoft Office, no web view, no
+third-party dependencies.
 
 ![status](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 
 ## Features
 
 - **Opens `.pptx` files** via the Open dialog, drag-and-drop, or the File menu
-- **Native slide rendering** — text (fonts, size, bold/italic/underline, color,
-  alignment), pictures, and autoshapes (rectangles, rounded rectangles, ellipses)
-  with solid fills and borders
+  (legacy `.ppt` converts automatically when LibreOffice is installed)
+- **Native slide rendering** — text (fonts, size, bold/italic/underline/strike,
+  color, alignment, line spacing, shrink-to-fit), pictures with crops, tables,
+  group shapes, connectors, and 15+ autoshape geometries with solid, gradient,
+  and picture fills
+- **Animations** — click-triggered entrance/exit builds (including
+  paragraph-by-paragraph), and slide transitions rendered as crossfades
+- **Presenter mode** — separate full-screen window on the extended display,
+  presenter console with current/next previews, camera panel, elapsed timer
 - **Placeholder inheritance** — titles and body text positioned correctly by
   resolving geometry and default text sizes from slide layouts and masters
 - **Theme colors** — resolves `schemeClr` references against the deck's theme
@@ -30,7 +37,7 @@ Build the double-clickable app bundle:
 
 ```bash
 ./build_app.sh
-open PowerpointViewer.app
+open SlideViewer.app
 ```
 
 Or run directly with Swift Package Manager:

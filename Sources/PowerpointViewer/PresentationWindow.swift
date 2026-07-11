@@ -83,10 +83,18 @@ struct PresentationScreenView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let slide = store.currentSlide, let pres = store.presentation {
-                SlideView(slide: slide, slideSize: pres.size, showShadow: false)
+                SlideView(slide: slide, slideSize: pres.size, showShadow: false,
+                          hiddenShapeIDs: store.hiddenShapeIDs,
+                          hiddenParagraphs: store.hiddenParagraphs)
                     .padding(1)
+                    .id(slide.id)
+                    .transition(slide.hasTransition ? .opacity : .identity)
             }
         }
+        // Animate build reveals within a slide, and crossfade between slides
+        // that define a transition.
+        .animation(.easeInOut(duration: 0.35), value: store.buildIndex)
+        .animation(.easeInOut(duration: 0.5), value: store.currentIndex)
         .contentShape(Rectangle())
         .onTapGesture { store.goNext() }
     }

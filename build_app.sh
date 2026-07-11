@@ -1,18 +1,19 @@
 #!/bin/bash
-# Builds PowerpointViewer.app — a double-clickable macOS application bundle.
+# Builds SlideViewer.app — a double-clickable macOS application bundle.
 set -euo pipefail
 
 CONFIG="release"
-APP_NAME="PowerpointViewer"
-DISPLAY_NAME="PowerPoint Viewer"
-BUNDLE_ID="com.example.powerpointviewer"
+EXECUTABLE_NAME="PowerpointViewer"      # SwiftPM target name (internal)
+APP_NAME="SlideViewer"                  # user-facing bundle name
+DISPLAY_NAME="SlideViewer"
+BUNDLE_ID="com.dnavarez.slideviewer"
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
 echo "▶ Building ($CONFIG)…"
 swift build -c "$CONFIG"
 
-BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/$APP_NAME"
+BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)/$EXECUTABLE_NAME"
 
 echo "▶ Assembling bundle…"
 rm -rf "$APP_DIR"
@@ -56,6 +57,7 @@ $ICON_KEY
             <key>LSItemContentTypes</key>
             <array>
                 <string>org.openxmlformats.presentationml.presentation</string>
+                <string>com.microsoft.powerpoint.ppt</string>
             </array>
         </dict>
     </array>

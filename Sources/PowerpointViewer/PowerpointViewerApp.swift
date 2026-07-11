@@ -6,7 +6,7 @@ struct PowerpointViewerApp: App {
     @StateObject private var store = PresentationStore()
 
     var body: some Scene {
-        Window("PowerPoint Viewer", id: "main") {
+        Window("SlideViewer", id: "main") {
             ContentView(store: store)
         }
         .commands {
@@ -39,9 +39,7 @@ struct PowerpointViewerApp: App {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        if let pptx = UTType(filenameExtension: "pptx") {
-            panel.allowedContentTypes = [pptx]
-        }
+        panel.allowedContentTypes = ["pptx", "ppt"].compactMap { UTType(filenameExtension: $0) }
         if panel.runModal() == .OK, let url = panel.url {
             store.open(url: url)
         }

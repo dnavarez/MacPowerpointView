@@ -49,7 +49,7 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle(store.fileName ?? "PowerPoint Viewer")
+        .navigationTitle(store.fileName ?? "SlideViewer")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -76,9 +76,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        if let pptx = UTType(filenameExtension: "pptx") {
-            panel.allowedContentTypes = [pptx]
-        }
+        panel.allowedContentTypes = ["pptx", "ppt"].compactMap { UTType(filenameExtension: $0) }
         if panel.runModal() == .OK, let url = panel.url {
             store.open(url: url)
         }
@@ -87,7 +85,7 @@ struct ContentView: View {
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url, url.pathExtension.lowercased() == "pptx" else { return }
+            guard let url, ["pptx", "ppt"].contains(url.pathExtension.lowercased()) else { return }
             DispatchQueue.main.async { store.open(url: url) }
         }
         return true
@@ -105,8 +103,11 @@ struct EmptyStateView: View {
             Image(systemName: "rectangle.on.rectangle.angled")
                 .font(.system(size: 64))
                 .foregroundStyle(.secondary)
-            Text("PowerPoint Viewer")
+            Text("SlideViewer")
                 .font(.largeTitle.weight(.semibold))
+            Text("Viewer for PowerPoint & PPTX")
+                .font(.title3)
+                .foregroundStyle(.secondary)
             Text("Drag a .pptx file here, or open one to begin.")
                 .foregroundStyle(.secondary)
             if store.isLoading {
@@ -132,9 +133,7 @@ struct EmptyStateView: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        if let pptx = UTType(filenameExtension: "pptx") {
-            panel.allowedContentTypes = [pptx]
-        }
+        panel.allowedContentTypes = ["pptx", "ppt"].compactMap { UTType(filenameExtension: $0) }
         if panel.runModal() == .OK, let url = panel.url {
             store.open(url: url)
         }
@@ -239,6 +238,12 @@ struct PresenterConsoleView: View {
                               systemImage: "dot.radiowaves.left.and.right")
                             .font(.headline)
                             .foregroundStyle(.red)
+                        if let slide = store.currentSlide, !slide.buildSteps.isEmpty {
+                            Text("Build \(store.buildIndex)/\(slide.buildSteps.count)")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 8)
+                        }
                         Spacer()
                         if let start = store.presentationStartDate {
                             Label {
@@ -285,7 +290,7 @@ struct PresenterConsoleView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                 }
-                .disabled(store.currentIndex <= 0)
+                .disabled(!store.canGoPrevious)
 
                 Text("Slide \(store.currentIndex + 1) of \(store.slideCount)")
                     .font(.callout.monospacedDigit())
@@ -296,7 +301,7 @@ struct PresenterConsoleView: View {
                 } label: {
                     Image(systemName: "chevron.right")
                 }
-                .disabled(store.currentIndex >= store.slideCount - 1)
+                .disabled(!store.canGoNext)
 
                 Text("← → to navigate · esc to end")
                     .font(.caption)
