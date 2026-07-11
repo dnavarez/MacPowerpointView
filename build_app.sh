@@ -45,6 +45,8 @@ $ICON_KEY
     <key>LSMinimumSystemVersion</key>  <string>14.0</string>
     <key>NSHighResolutionCapable</key> <true/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Shows a live camera preview in the presenter console.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

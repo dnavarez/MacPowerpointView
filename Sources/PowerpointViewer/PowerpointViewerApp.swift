@@ -25,8 +25,9 @@ struct PowerpointViewerApp: App {
                     .keyboardShortcut(.leftArrow, modifiers: [])
                     .disabled(store.presentation == nil)
                 Divider()
-                Button(store.isPresenting ? "Exit Presentation" : "Start Presentation") {
-                    store.isPresenting.toggle()
+                Button(store.isPresenting ? "End Presentation" : "Start Presentation") {
+                    if store.isPresenting { store.endPresentation() }
+                    else { store.startPresentation() }
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(store.presentation == nil)

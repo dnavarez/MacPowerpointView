@@ -15,12 +15,38 @@ final class PresentationStore: ObservableObject {
     @Published var isPresenting: Bool = false
 
     private var extractedRoot: URL?
+    private let presentationWindow = PresentationWindowController()
 
     var slideCount: Int { presentation?.slides.count ?? 0 }
 
     var currentSlide: Slide? {
         guard let slides = presentation?.slides, slides.indices.contains(currentIndex) else { return nil }
         return slides[currentIndex]
+    }
+
+    /// The slide after the current one, or nil at the end of the deck.
+    var nextSlide: Slide? {
+        guard let slides = presentation?.slides, slides.indices.contains(currentIndex + 1) else { return nil }
+        return slides[currentIndex + 1]
+    }
+
+    // MARK: - Presentation mode
+
+    /// When the current presentation started; drives the console's elapsed timer.
+    @Published var presentationStartDate: Date?
+
+    func startPresentation() {
+        guard presentation != nil, !isPresenting else { return }
+        isPresenting = true
+        presentationStartDate = Date()
+        presentationWindow.onEnd = { [weak self] in self?.endPresentation() }
+        presentationWindow.show(store: self)
+    }
+
+    func endPresentation() {
+        presentationWindow.close()
+        isPresenting = false
+        presentationStartDate = nil
     }
 
     func open(url: URL) {
@@ -38,6 +64,7 @@ final class PresentationStore: ObservableObject {
                     throw PPTXParser.ParseError.missing("any slides")
                 }
                 await MainActor.run {
+                    self.endPresentation()
                     self.cleanup()
                     self.extractedRoot = root
                     self.presentation = pres

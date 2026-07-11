@@ -18,11 +18,6 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
-        .overlay {
-            if store.isPresenting, let slide = store.currentSlide, let pres = store.presentation {
-                PresentationOverlay(store: store, slide: slide, slideSize: pres.size)
-            }
-        }
         .alert("Could not open presentation",
                isPresented: Binding(get: { store.errorMessage != nil },
                                     set: { if !$0 { store.errorMessage = nil } })) {
@@ -39,15 +34,19 @@ struct ContentView: View {
             ThumbnailSidebar(store: store)
                 .navigationSplitViewColumnWidth(min: 160, ideal: 200, max: 260)
         } detail: {
-            VStack(spacing: 0) {
-                if let slide = store.currentSlide, let pres = store.presentation {
-                    SlideView(slide: slide, slideSize: pres.size)
-                        .padding(24)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(nsColor: .windowBackgroundColor))
+            if store.isPresenting {
+                PresenterConsoleView(store: store)
+            } else {
+                VStack(spacing: 0) {
+                    if let slide = store.currentSlide, let pres = store.presentation {
+                        SlideView(slide: slide, slideSize: pres.size)
+                            .padding(24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                    Divider()
+                    SlideControls(store: store)
                 }
-                Divider()
-                SlideControls(store: store)
             }
         }
         .navigationTitle(store.fileName ?? "PowerPoint Viewer")
@@ -61,9 +60,11 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    store.isPresenting = true
+                    if store.isPresenting { store.endPresentation() }
+                    else { store.startPresentation() }
                 } label: {
-                    Label("Present", systemImage: "play.fill")
+                    Label(store.isPresenting ? "End" : "Present",
+                          systemImage: store.isPresenting ? "stop.fill" : "play.fill")
                 }
             }
         }
@@ -209,7 +210,7 @@ struct SlideControls: View {
             Spacer()
 
             Button {
-                store.isPresenting = true
+                store.startPresentation()
             } label: {
                 Label("Present", systemImage: "play.fill")
             }
@@ -220,52 +221,202 @@ struct SlideControls: View {
     }
 }
 
-// MARK: - Present mode
+// MARK: - Presenter console
 
-struct PresentationOverlay: View {
+/// Shown in the main window while presenting: the slide the audience currently
+/// sees, a preview of the next slide, and transport controls.
+struct PresenterConsoleView: View {
     @ObservedObject var store: PresentationStore
-    let slide: Slide
-    let slideSize: CGSize
-    @FocusState private var focused: Bool
+    @StateObject private var camera = CameraManager()
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            SlideView(slide: slide, slideSize: slideSize)
-                .padding(40)
+        VStack(spacing: 0) {
+            HSplitView {
+                // Current slide (what the audience sees now).
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Now Presenting — Slide \(store.currentIndex + 1) of \(store.slideCount)",
+                              systemImage: "dot.radiowaves.left.and.right")
+                            .font(.headline)
+                            .foregroundStyle(.red)
+                        Spacer()
+                        if let start = store.presentationStartDate {
+                            Label {
+                                Text(start, style: .timer)
+                                    .font(.headline.monospacedDigit())
+                            } icon: {
+                                Image(systemName: "stopwatch")
+                            }
+                            .foregroundStyle(.secondary)
+                            .help("Elapsed presentation time")
+                        }
+                    }
+                    if let slide = store.currentSlide, let pres = store.presentation {
+                        SlideView(slide: slide, slideSize: pres.size, showShadow: false)
+                            .background(Color.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.red.opacity(0.7), lineWidth: 2))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+                .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                // Right column: next slide over camera, each pane resizable.
+                VSplitView {
+                    nextSlidePane
+                        .padding(12)
+                        .frame(minHeight: 150, maxHeight: .infinity)
+                    cameraPane
+                        .padding(12)
+                        .frame(minHeight: 110, maxHeight: .infinity)
+                }
+                .frame(minWidth: 240, idealWidth: 330, maxWidth: 640)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            // Transport controls.
+            HStack(spacing: 12) {
+                Button {
+                    store.goPrevious()
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .disabled(store.currentIndex <= 0)
+
+                Text("Slide \(store.currentIndex + 1) of \(store.slideCount)")
+                    .font(.callout.monospacedDigit())
+                    .frame(minWidth: 140)
+
+                Button {
+                    store.goNext()
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .disabled(store.currentIndex >= store.slideCount - 1)
+
+                Text("← → to navigate · esc to end")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 8)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    store.endPresentation()
+                } label: {
+                    Label("End Presentation", systemImage: "stop.fill")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
         }
-        .focusable()
-        .focused($focused)
-        .onKeyPress { press in
-            switch press.key {
-            case .rightArrow, .space, .downArrow, .return:
-                store.goNext(); return .handled
-            case .leftArrow, .upArrow:
-                store.goPrevious(); return .handled
-            case .escape:
-                exitPresentation(); return .handled
-            default:
-                return .ignored
+        .background(Color(nsColor: .underPageBackgroundColor))
+        .onDisappear { camera.stop() }
+    }
+
+    // MARK: Next slide pane
+
+    private var nextSlidePane: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(store.nextSlide != nil ? "Next — Slide \(store.currentIndex + 2)" : "Next",
+                  systemImage: "forward.end")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            if let next = store.nextSlide, let pres = store.presentation {
+                SlideView(slide: next, slideSize: pres.size, showShadow: false)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.gray.opacity(0.4), lineWidth: 1))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black.opacity(0.85))
+                    .overlay(
+                        Text("End of presentation")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    )
             }
         }
-        .onTapGesture { store.goNext() }
-        .onAppear {
-            focused = true
-            setFullScreen(true)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: Camera pane
+
+    private var cameraPane: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Camera", systemImage: "video")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: $camera.isEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+
+            if camera.isEnabled {
+                if camera.devices.count > 1 {
+                    Picker("", selection: $camera.selectedID) {
+                        ForEach(camera.devices, id: \.uniqueID) { device in
+                            Text(device.localizedName).tag(device.uniqueID)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                }
+
+                if camera.authorizationDenied {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.black.opacity(0.85))
+                        .overlay(
+                            Text("Camera access denied.\nEnable it in System Settings → Privacy & Security → Camera.")
+                                .font(.caption)
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.secondary)
+                                .padding(8)
+                        )
+                } else if camera.devices.isEmpty {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.black.opacity(0.85))
+                        .overlay(
+                            Text("No camera detected")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        )
+                } else {
+                    CameraPreviewView(session: camera.session)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.gray.opacity(0.4), lineWidth: 1))
+                }
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black.opacity(0.5))
+                    .overlay(
+                        Label("Camera off", systemImage: "video.slash")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    )
+            }
         }
-        .transition(.opacity)
-    }
-
-    private func exitPresentation() {
-        setFullScreen(false)
-        store.isPresenting = false
-    }
-
-    private func setFullScreen(_ on: Bool) {
-        guard let window = NSApp.keyWindow ?? NSApp.windows.first else { return }
-        let isFull = window.styleMask.contains(.fullScreen)
-        if on != isFull {
-            window.toggleFullScreen(nil)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onChange(of: camera.isEnabled) { _, on in
+            if on {
+                camera.refreshDevices()
+                camera.start()
+            } else {
+                camera.stop()
+            }
+        }
+        .onChange(of: camera.selectedID) { _, _ in
+            if camera.isEnabled { camera.applySelectionAndRun() }
         }
     }
 }
