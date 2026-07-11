@@ -10,6 +10,12 @@ let package = Package(
         .executableTarget(
             name: "PowerpointViewer",
             path: "Sources/PowerpointViewer"
+        ),
+        .testTarget(
+            name: "PowerpointViewerTests",
+            dependencies: ["PowerpointViewer"],
+            path: "Tests/PowerpointViewerTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )
