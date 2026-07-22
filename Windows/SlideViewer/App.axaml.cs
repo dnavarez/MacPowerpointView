@@ -39,6 +39,7 @@ public partial class App : Application
                     if (deck != null && File.Exists(deck)) w.OpenFile(deck);
                     w.RunSelfTest(args.Contains("--camera"));
                     if (args.Contains("--timing")) w.RunTiming();
+                    if (args.Contains("--center")) w.VerifyCentering();
                     Console.WriteLine("SELFTEST OK");
                 }
                 catch (Exception ex)

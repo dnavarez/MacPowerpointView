@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using SlideViewer.Models;
 using SlideViewer.Rendering;
 
@@ -483,7 +484,7 @@ public sealed class MainWindow : Window
         if (_thumbs.SelectedIndex != _state.CurrentIndex) _thumbs.SelectedIndex = _state.CurrentIndex;
         _suppressSelection = false;
         // Keep the live slide centred so upcoming slides read from the list.
-        try { _thumbs.ScrollIntoView(_state.CurrentIndex); } catch { }
+        CenterCurrentThumbnail();
         UpdateThumbnailMarkers();
 
         _nowLabel.Text = $"● Now Presenting — Slide {_state.CurrentIndex + 1} of {_state.SlideCount}";
@@ -491,6 +492,37 @@ public sealed class MainWindow : Window
         var builds = _state.CurrentSlide?.BuildSteps.Count ?? 0;
         _buildLabel.Text = builds > 0 ? $"Build {_state.BuildIndex}/{builds}" : "";
         UpdateClock();
+    }
+
+    /// <summary>Scrolls the list so the live slide sits in the middle, with the
+    /// preceding and upcoming slides visible around it.
+    ///
+    /// ListBox.ScrollIntoView only brings an item just barely into view, which
+    /// leaves the live slide pinned to the top or bottom edge — so the scroll
+    /// offset is set directly. Rows are uniform (every thumbnail is the same
+    /// size), so the row height can be derived from the extent.</summary>
+    private void CenterCurrentThumbnail()
+    {
+        // Posted so it runs after the layout pass that follows a selection change.
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                var count = _state.SlideCount;
+                if (count == 0) return;
+                var scroll = _thumbs.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+                if (scroll == null) return;
+
+                var extent = scroll.Extent.Height;
+                var viewport = scroll.Viewport.Height;
+                if (extent <= 0 || viewport <= 0 || extent <= viewport) return;
+
+                var rowHeight = extent / count;
+                var target = (_state.CurrentIndex + 0.5) * rowHeight - viewport / 2;
+                scroll.Offset = new Vector(scroll.Offset.X, Math.Clamp(target, 0, extent - viewport));
+            }
+            catch { /* scrolling is cosmetic */ }
+        }, DispatcherPriority.Loaded);
     }
 
     /// <summary>Marks which slide is live and which is next, so the sidebar
@@ -676,6 +708,35 @@ public sealed class MainWindow : Window
         _state.GoPrevious();
         EndPresentation();
         _state.GoTo(0);
+    }
+
+    /// <summary>Checks that the live slide really lands in the middle of the
+    /// list — ScrollIntoView used to leave it pinned to an edge.</summary>
+    public void VerifyCentering()
+    {
+        foreach (var index in new[] { 0, 20, 60, Math.Max(0, _state.SlideCount - 1) })
+        {
+            if (index >= _state.SlideCount) continue;
+            _state.GoTo(index);
+            Dispatcher.UIThread.RunJobs();
+            Dispatcher.UIThread.RunJobs(DispatcherPriority.Loaded);
+
+            var scroll = _thumbs.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+            if (scroll == null) { Console.WriteLine("CENTER: no scrollviewer"); return; }
+
+            var extent = scroll.Extent.Height;
+            var viewport = scroll.Viewport.Height;
+            if (extent <= viewport) { Console.WriteLine($"CENTER slide {index + 1}: list fits, no scroll"); continue; }
+
+            var rowHeight = extent / _state.SlideCount;
+            var itemCentre = (index + 0.5) * rowHeight - scroll.Offset.Y;   // relative to viewport top
+            var viewportCentre = viewport / 2;
+            // Slides near the ends can't centre; the offset clamps instead.
+            var clamped = scroll.Offset.Y <= 0.5 || scroll.Offset.Y >= extent - viewport - 0.5;
+            var delta = Math.Abs(itemCentre - viewportCentre);
+            Console.WriteLine($"CENTER slide {index + 1}: offset {itemCentre:F0} vs centre {viewportCentre:F0} " +
+                              $"(delta {delta:F0}px){(clamped ? " [clamped at list end]" : "")}");
+        }
     }
 
     /// <summary>Times the per-slide work so optimisation targets are measured.</summary>
