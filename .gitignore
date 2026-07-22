@@ -5,3 +5,12 @@ DerivedData/
 .DS_Store
 Tools/AppIcon.iconset/
 .goldens/
+
+# Windows build artifacts
+Windows/publish/
+Windows/dist/
+Windows/**/bin/
+Windows/**/obj/
+Windows/Installer/payload.zip
+Windows/installer/AppIcon.ico
+Windows/Installer/AppIcon.ico
