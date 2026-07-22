@@ -25,7 +25,10 @@ public static class RenderTool
         var bitmap = SlideRenderer.RenderToBitmap(pres.Slides[slideIndex], pres.Size, width, scaling);
         using var stream = File.Create(outPath);
         bitmap.Save(stream);
-        Console.WriteLine($"THUMB scaling={scaling} logical={width:F0} pixels={bitmap.PixelSize.Width}x{bitmap.PixelSize.Height} -> {outPath}");
+        Console.WriteLine($"THUMB scaling={scaling} requestedLogical={width:F0} " +
+                          $"pixels={bitmap.PixelSize.Width}x{bitmap.PixelSize.Height} " +
+                          $"reportedSize={bitmap.Size.Width:F0}x{bitmap.Size.Height:F0} " +
+                          $"dpi={bitmap.Dpi.X:F0}");
         return 0;
     }
 

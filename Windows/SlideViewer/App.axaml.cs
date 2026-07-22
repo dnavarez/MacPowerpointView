@@ -51,6 +51,7 @@ public partial class App : Application
                     if (args.Contains("--timing")) w.RunTiming();
                     if (args.Contains("--center")) w.VerifyCentering();
                     if (args.Contains("--geometry")) w.ReportGeometry();
+                    if (args.Contains("--fit")) w.ReportThumbnailFit(args.Contains("--narrow"));
                     Console.WriteLine("SELFTEST OK");
                 }
                 catch (Exception ex)

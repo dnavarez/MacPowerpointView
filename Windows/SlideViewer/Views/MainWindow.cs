@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -42,7 +43,7 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "SlideViewer";
+        Title = "SlideViewer 1.0.1";
         MinWidth = 820;
         MinHeight = 520;
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -124,6 +125,11 @@ public sealed class MainWindow : Window
         // Thumbnails
         _thumbs.SelectionMode = SelectionMode.Single;
         _thumbs.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
+        // Without this the list measures rows with unbounded width, so a
+        // thumbnail wider than the sidebar is clipped (cropping the slide)
+        // instead of being scaled down to fit.
+        ScrollViewer.SetHorizontalScrollBarVisibility(_thumbs, ScrollBarVisibility.Disabled);
+        _thumbs.HorizontalAlignment = HorizontalAlignment.Stretch;
         _thumbs.SelectionChanged += (_, _) =>
         {
             if (_suppressSelection || _thumbs.SelectedIndex < 0) return;
@@ -330,7 +336,7 @@ public sealed class MainWindow : Window
         {
             EndPresentation();
             _state.Open(path);
-            Title = $"{_state.FileName} — SlideViewer";
+            Title = $"{_state.FileName} — SlideViewer 1.0.1";
             ShowEmptyState(false);
             _presentButton.IsEnabled = true;
             BuildThumbnails();
@@ -375,15 +381,22 @@ public sealed class MainWindow : Window
 
     /// <summary>Thumbnail width from the sidebar's current width, so dragging the
     /// divider scales them and how many fit follows from the size chosen.</summary>
+    /// <summary>Logical width to rasterise thumbnails at.
+    ///
+    /// This is deliberately NOT tied to the sidebar's current width: the image
+    /// always scales to whatever the column gives it, so rendering a little
+    /// larger than needed keeps thumbnails sharp without depending on layout
+    /// having happened yet. It only grows when the user drags the sidebar wider
+    /// than the current bitmaps.</summary>
     private double CurrentThumbWidth()
     {
-        // ActualWidth is only meaningful after layout; fall back to the list's
-        // own bounds, then the configured column width, then a sane default.
         var column = _sidebarColumn?.ActualWidth ?? 0;
         if (column < 50) column = _thumbs.Bounds.Width;
         if (column < 50 && _sidebarColumn?.Width.IsAbsolute == true) column = _sidebarColumn.Width.Value;
         if (column < 50) column = 360;
-        return Math.Max(90, column - 64);   // slide number, badge, padding, scrollbar
+        var needed = Math.Max(90, column - 64);   // number, badge, padding, scrollbar
+        // Round up to a step so small drags don't trigger constant re-rendering.
+        return Math.Clamp(Math.Ceiling(needed / 60) * 60, 180, 720);
     }
 
     private readonly List<Border> _thumbFrames = new();
@@ -761,6 +774,35 @@ public sealed class MainWindow : Window
         _state.GoPrevious();
         EndPresentation();
         _state.GoTo(0);
+    }
+
+    /// <summary>Measures whether thumbnail rows actually fit the list viewport.
+    /// A row wider than the viewport is clipped, which crops the slide.</summary>
+    public void ReportThumbnailFit(bool narrowSidebar = false)
+    {
+        if (narrowSidebar && _sidebarColumn != null)
+        {
+            // Reproduce the reported case: the sidebar is much narrower than the
+            // width the thumbnails were rasterised for.
+            _sidebarColumn.Width = new GridLength(180, GridUnitType.Pixel);
+            Dispatcher.UIThread.RunJobs();
+        }
+        Dispatcher.UIThread.RunJobs();
+        Dispatcher.UIThread.RunJobs(DispatcherPriority.Loaded);
+
+        var scroll = _thumbs.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        Console.WriteLine($"FIT listBounds={_thumbs.Bounds.Width:F0} " +
+                          $"viewport={scroll?.Viewport.Width ?? -1:F0} extentW={scroll?.Extent.Width ?? -1:F0}");
+
+        var containers = _thumbs.GetVisualDescendants().OfType<ListBoxItem>().Take(3).ToList();
+        foreach (var c in containers)
+        {
+            var img = c.GetVisualDescendants().OfType<Image>().FirstOrDefault();
+            Console.WriteLine($"FIT item={c.Bounds.Width:F0} image={img?.Bounds.Width ?? -1:F0} " +
+                              $"bitmap={(img?.Source as Avalonia.Media.Imaging.Bitmap)?.Size.Width ?? -1:F0}");
+        }
+        var overflow = (scroll?.Extent.Width ?? 0) > (scroll?.Viewport.Width ?? 0) + 1;
+        Console.WriteLine($"FIT overflowing={overflow}");
     }
 
     /// <summary>Reports the launch geometry so it can be checked against the
