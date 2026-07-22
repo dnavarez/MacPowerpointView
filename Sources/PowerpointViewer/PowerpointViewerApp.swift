@@ -8,6 +8,7 @@ struct PowerpointViewerApp: App {
     var body: some Scene {
         Window("SlideViewer", id: "main") {
             ContentView(store: store)
+                .background(WindowSizer())
         }
         .commands {
             // File menu: Open…
