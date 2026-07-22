@@ -37,7 +37,7 @@ public partial class App : Application
                     var w = new MainWindow();
                     w.Show();
                     if (deck != null && File.Exists(deck)) w.OpenFile(deck);
-                    w.RunSelfTest();
+                    w.RunSelfTest(args.Contains("--camera"));
                     if (args.Contains("--timing")) w.RunTiming();
                     Console.WriteLine("SELFTEST OK");
                 }

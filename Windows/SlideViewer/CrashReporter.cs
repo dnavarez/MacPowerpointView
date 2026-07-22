@@ -33,24 +33,15 @@ internal static class CrashReporter
         };
     }
 
+    /// <summary>Records a non-fatal problem to the log without interrupting the
+    /// user — used for things the UI already reports in place, like a camera
+    /// that won't open.</summary>
+    public static void Log(Exception exception, string context) =>
+        Write(exception, context);
+
     public static void Report(Exception exception, string context)
     {
-        var details = $"""
-            SlideViewer crash report
-            Time    : {DateTime.Now:yyyy-MM-dd HH:mm:ss}
-            Context : {context}
-            OS      : {Environment.OSVersion} ({RuntimeInformation.OSArchitecture})
-            Runtime : {RuntimeInformation.FrameworkDescription}
-
-            {exception}
-            """;
-
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            File.AppendAllText(LogPath, details + Environment.NewLine + new string('-', 70) + Environment.NewLine);
-        }
-        catch { /* logging must never mask the original failure */ }
+        Write(exception, context);
 
         var message =
             $"SlideViewer could not start.\n\n{exception.GetType().Name}: {exception.Message}\n\n" +
@@ -62,7 +53,27 @@ internal static class CrashReporter
         }
         else
         {
-            Console.Error.WriteLine(details);
+            Console.Error.WriteLine($"{context}: {exception}");
         }
+    }
+
+    private static void Write(Exception exception, string context)
+    {
+        var details = $"""
+            SlideViewer report
+            Time    : {DateTime.Now:yyyy-MM-dd HH:mm:ss}
+            Context : {context}
+            OS      : {Environment.OSVersion} ({RuntimeInformation.OSArchitecture})
+            Runtime : {RuntimeInformation.FrameworkDescription}
+
+            {exception}
+            """;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+            File.AppendAllText(LogPath,
+                details + Environment.NewLine + new string('-', 70) + Environment.NewLine);
+        }
+        catch { /* logging must never mask the original failure */ }
     }
 }

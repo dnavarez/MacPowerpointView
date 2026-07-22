@@ -533,9 +533,14 @@ public sealed class MainWindow : Window
 
     /// <summary>Drives the risky UI paths once so failures surface in CI/builds
     /// rather than on a user's machine.</summary>
-    public void RunSelfTest()
+    public void RunSelfTest(bool exerciseCamera = false)
     {
         StartPresentation();
+        if (exerciseCamera)
+        {
+            _camera.RefreshDevices();
+            _camera.SelfTestToggle();
+        }
         _state.GoNext();
         _state.GoNext();
         _state.GoPrevious();
