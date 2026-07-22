@@ -20,10 +20,14 @@ public sealed class MainWindow : Window
     private readonly ListBox _thumbs = new();
     private readonly Panel _stage = new();          // browser view
     private readonly Panel _consoleStage = new();   // presenter console, current slide
-    private readonly Panel _nextStage = new();      // presenter console, next slide
+    private double _thumbWidth = 150;
+    private ColumnDefinition? _sidebarColumn;
+    private readonly StackPanel _consoleTransport = new();
+    private readonly StackPanel _browserTransport = new();
+    private readonly Button _endButton = new();
+    private bool _sidebarSized;
     private readonly TextBlock _status = new();
     private readonly TextBlock _nowLabel = new();
-    private readonly TextBlock _nextLabel = new();
     private readonly TextBlock _clock = new();
     private readonly TextBlock _buildLabel = new();
     private readonly Button _presentButton = new();
@@ -107,8 +111,6 @@ public sealed class MainWindow : Window
         // Presenter console
         _nowLabel.Foreground = Brushes.Tomato;
         _nowLabel.FontWeight = FontWeight.SemiBold;
-        _nextLabel.Foreground = Brushes.Gray;
-        _nextLabel.FontWeight = FontWeight.SemiBold;
         _clock.Foreground = Brushes.Gainsboro;
         _clock.FontWeight = FontWeight.SemiBold;
         _buildLabel.Foreground = Brushes.Gray;
@@ -127,29 +129,29 @@ public sealed class MainWindow : Window
         nowPane.Children.Add(nowHeader);
         nowPane.Children.Add(_consoleStage);
 
-        var nextPane = new DockPanel();
-        DockPanel.SetDock(_nextLabel, Dock.Top);
-        _nextLabel.Margin = new Thickness(0, 0, 0, 8);
-        nextPane.Children.Add(_nextLabel);
-        nextPane.Children.Add(_nextStage);
+        // Transport sits directly under the live slide, where the presenter is
+        // already looking, rather than at the bottom of the window.
+        _consoleTransport.Orientation = Orientation.Horizontal;
+        _consoleTransport.HorizontalAlignment = HorizontalAlignment.Center;
+        _consoleTransport.Spacing = 6;
+        _consoleTransport.Margin = new Thickness(0, 8, 0, 0);
+        _consoleTransport.Children.Add(_prevButton);
+        _consoleTransport.Children.Add(_status);
+        _consoleTransport.Children.Add(_nextButton);
+        DockPanel.SetDock(_consoleTransport, Dock.Bottom);
+        nowPane.Children.Insert(1, _consoleTransport);
 
-        // Right column: next slide above, camera below, each resizable.
-        var rightColumn = new Grid { RowDefinitions = new RowDefinitions("*,Auto,Auto") };
-        rightColumn.Children.Add(nextPane);
-        var vSplitter = new GridSplitter { Height = 6, Background = Brushes.Transparent };
-        Grid.SetRow(vSplitter, 1);
-        rightColumn.Children.Add(vSplitter);
-        Grid.SetRow(_camera, 2);
-        rightColumn.Children.Add(_camera);
-
-        _consoleGrid.ColumnDefinitions = new ColumnDefinitions("*,Auto,340");
+        // Live slide above, camera below, draggable divider between.
+        _consoleGrid.ColumnDefinitions = new ColumnDefinitions("*");
+        _consoleGrid.RowDefinitions = new RowDefinitions("*,Auto,Auto");
         _consoleGrid.Margin = new Thickness(16);
         _consoleGrid.Children.Add(nowPane);
-        var splitter = new GridSplitter { Width = 6, Background = Brushes.Transparent };
-        Grid.SetColumn(splitter, 1);
-        _consoleGrid.Children.Add(splitter);
-        Grid.SetColumn(rightColumn, 2);
-        _consoleGrid.Children.Add(rightColumn);
+        var vSplitter = new GridSplitter { Height = 6, Background = Brushes.Transparent };
+        Grid.SetRow(vSplitter, 1);
+        _consoleGrid.Children.Add(vSplitter);
+        Grid.SetRow(_camera, 2);
+        _camera.MinHeight = 140;
+        _consoleGrid.Children.Add(_camera);
         _consoleGrid.IsVisible = false;
 
         // Bottom transport bar
@@ -171,16 +173,21 @@ public sealed class MainWindow : Window
             Margin = new Thickness(14, 0)
         };
 
-        var transport = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Spacing = 4
-        };
-        transport.Children.Add(_prevButton);
-        transport.Children.Add(_status);
-        transport.Children.Add(_nextButton);
+        var transport = new DockPanel { LastChildFill = false };
+        DockPanel.SetDock(hint, Dock.Left);
+        hint.VerticalAlignment = VerticalAlignment.Center;
         transport.Children.Add(hint);
+        DockPanel.SetDock(_endButton, Dock.Right);
+        _endButton.Content = "■  End Presentation";
+        _endButton.Padding = new Thickness(14, 4);
+        _endButton.IsVisible = false;
+        _endButton.Click += (_, _) => RequestEndPresentation();
+        transport.Children.Add(_endButton);
+        DockPanel.SetDock(_browserTransport, Dock.Right);
+        _browserTransport.Orientation = Orientation.Horizontal;
+        _browserTransport.Spacing = 6;
+        _browserTransport.Margin = new Thickness(0, 0, 12, 0);
+        transport.Children.Add(_browserTransport);
 
         var bottomBar = new Border
         {
@@ -231,13 +238,31 @@ public sealed class MainWindow : Window
         browserArea.Children.Add(stageHost);
         browserArea.Children.Add(_consoleGrid);
 
-        var main = new Grid { ColumnDefinitions = new ColumnDefinitions("220,*") };
+        // Sidebar starts at ~30% of the window and is draggable; MinWidth/MaxWidth
+        // bound the drag rather than a fixed width.
+        var main = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions
+            {
+                new ColumnDefinition(360, GridUnitType.Pixel) { MinWidth = 170, MaxWidth = 900 },
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star)
+            }
+        };
+        _sidebarColumn = main.ColumnDefinitions[0];
         main.Children.Add(_thumbs);
+
+        var sidebarSplitter = new GridSplitter { Width = 6, Background = Brushes.Transparent };
+        Grid.SetColumn(sidebarSplitter, 1);
+        // Re-render thumbnails at the new width once the drag settles.
+        sidebarSplitter.DragCompleted += (_, _) => RebuildThumbnailsForWidth();
+        main.Children.Add(sidebarSplitter);
+
         var rightSide = new DockPanel();
         DockPanel.SetDock(bottomBar, Dock.Bottom);
         rightSide.Children.Add(bottomBar);
         rightSide.Children.Add(browserArea);
-        Grid.SetColumn(rightSide, 1);
+        Grid.SetColumn(rightSide, 2);
         main.Children.Add(rightSide);
 
         _content.Children.Add(main);
@@ -323,13 +348,26 @@ public sealed class MainWindow : Window
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
-    private const double ThumbWidth = 150;
+    /// <summary>Thumbnail width from the sidebar's current width, so dragging the
+    /// divider scales them and how many fit follows from the size chosen.</summary>
+    private double CurrentThumbWidth()
+    {
+        var column = _sidebarColumn?.ActualWidth ?? 360;
+        if (column < 50) column = 360;
+        return Math.Max(90, column - 64);   // slide number, padding, scrollbar
+    }
+
+    private readonly List<Border> _thumbFrames = new();
+    private readonly List<TextBlock> _thumbBadges = new();
 
     private void BuildThumbnails()
     {
         if (_state.Presentation is not { } pres) return;
 
-        var thumbHeight = ThumbWidth * pres.Size.Height / pres.Size.Width;
+        _thumbWidth = CurrentThumbWidth();
+        var thumbHeight = _thumbWidth * pres.Size.Height / pres.Size.Width;
+        _thumbFrames.Clear();
+        _thumbBadges.Clear();
         var items = new List<Control>();
         var images = new List<Image>();
 
@@ -339,7 +377,7 @@ public sealed class MainWindow : Window
         {
             var image = new Image
             {
-                Width = ThumbWidth, Height = thumbHeight, Stretch = Stretch.Fill
+                Width = _thumbWidth, Height = thumbHeight, Stretch = Stretch.Fill
             };
             images.Add(image);
 
@@ -347,18 +385,30 @@ public sealed class MainWindow : Window
             row.Children.Add(new TextBlock
             {
                 Text = (i + 1).ToString(),
-                Width = 22,
+                Width = 26,
                 TextAlignment = TextAlignment.Right,
                 Foreground = Brushes.Gray,
                 VerticalAlignment = VerticalAlignment.Center
             });
-            row.Children.Add(new Border
+            var frame = new Border
             {
                 BorderBrush = new SolidColorBrush(Color.FromArgb(80, 200, 200, 200)),
                 BorderThickness = new Thickness(1),
                 Background = Brushes.White,
                 Child = image
-            });
+            };
+            _thumbFrames.Add(frame);
+            row.Children.Add(frame);
+
+            var badge = new TextBlock
+            {
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsVisible = false
+            };
+            _thumbBadges.Add(badge);
+            row.Children.Add(badge);
             items.Add(row);
         }
 
@@ -383,12 +433,22 @@ public sealed class MainWindow : Window
         var end = Math.Min(start + batch, images.Count);
         for (int i = start; i < end; i++)
         {
-            try { images[i].Source = SlideRenderer.RenderToBitmap(pres.Slides[i], pres.Size, ThumbWidth); }
+            try { images[i].Source = SlideRenderer.RenderToBitmap(pres.Slides[i], pres.Size, _thumbWidth); }
             catch { /* a thumbnail is cosmetic; never break opening a deck */ }
         }
         if (end < images.Count)
             Dispatcher.UIThread.Post(() => RenderThumbnails(pres, images, end, token),
                 DispatcherPriority.Background);
+    }
+
+    /// <summary>Re-rasterises thumbnails after the sidebar is resized, but only
+    /// when the width actually changed meaningfully.</summary>
+    private void RebuildThumbnailsForWidth()
+    {
+        if (_state.Presentation == null) return;
+        var width = CurrentThumbWidth();
+        if (Math.Abs(width - _thumbWidth) < 8) return;
+        BuildThumbnails();
     }
 
     private void OnStateChanged()
@@ -410,27 +470,6 @@ public sealed class MainWindow : Window
         if (_state.CurrentSlide is { } slide)
             target.Children.Add(SlideRenderer.Render(slide, pres.Size, stageW, stageH));
 
-        _nextStage.Children.Clear();
-        if (_state.IsPresenting)
-        {
-            var nextW = Math.Max(50, _nextStage.Bounds.Width > 10 ? _nextStage.Bounds.Width : 320);
-            var nextH = nextW * pres.Size.Height / pres.Size.Width;
-            if (_state.NextSlide is { } next)
-                _nextStage.Children.Add(SlideRenderer.Render(next, pres.Size, nextW, nextH));
-            else
-                _nextStage.Children.Add(new Border
-                {
-                    Height = nextH,
-                    Background = new SolidColorBrush(Color.FromArgb(220, 0, 0, 0)),
-                    Child = new TextBlock
-                    {
-                        Text = "End of presentation",
-                        Foreground = Brushes.Gray,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center
-                    }
-                });
-        }
     }
 
     private void UpdateChrome()
@@ -443,13 +482,37 @@ public sealed class MainWindow : Window
         _suppressSelection = true;
         if (_thumbs.SelectedIndex != _state.CurrentIndex) _thumbs.SelectedIndex = _state.CurrentIndex;
         _suppressSelection = false;
+        // Keep the live slide centred so upcoming slides read from the list.
+        try { _thumbs.ScrollIntoView(_state.CurrentIndex); } catch { }
+        UpdateThumbnailMarkers();
 
         _nowLabel.Text = $"● Now Presenting — Slide {_state.CurrentIndex + 1} of {_state.SlideCount}";
-        _nextLabel.Text = _state.NextSlide != null ? $"Next — Slide {_state.CurrentIndex + 2}" : "Next";
 
         var builds = _state.CurrentSlide?.BuildSteps.Count ?? 0;
         _buildLabel.Text = builds > 0 ? $"Build {_state.BuildIndex}/{builds}" : "";
         UpdateClock();
+    }
+
+    /// <summary>Marks which slide is live and which is next, so the sidebar
+    /// replaces a dedicated next-slide pane.</summary>
+    private void UpdateThumbnailMarkers()
+    {
+        for (int i = 0; i < _thumbFrames.Count; i++)
+        {
+            var isCurrent = i == _state.CurrentIndex;
+            var isNext = i == _state.CurrentIndex + 1;
+            _thumbFrames[i].BorderBrush = isCurrent
+                ? Brushes.Red
+                : isNext && _state.IsPresenting
+                    ? Brushes.DodgerBlue
+                    : new SolidColorBrush(Color.FromArgb(80, 200, 200, 200));
+            _thumbFrames[i].BorderThickness = new Thickness(isCurrent ? 3 : 1);
+
+            var badge = _thumbBadges[i];
+            badge.IsVisible = _state.IsPresenting && (isCurrent || isNext);
+            badge.Text = isCurrent ? "LIVE" : "NEXT";
+            badge.Foreground = isCurrent ? Brushes.Red : Brushes.Gray;
+        }
     }
 
     private void UpdateClock()
@@ -468,8 +531,71 @@ public sealed class MainWindow : Window
 
     private void TogglePresentation()
     {
-        if (_state.IsPresenting) EndPresentation();
+        if (_state.IsPresenting) RequestEndPresentation();
         else StartPresentation();
+    }
+
+    /// <summary>Esc asks before ending — an accidental keypress mid-service
+    /// should not drop the audience back to the desktop.</summary>
+    private async void RequestEndPresentation()
+    {
+        if (!_state.IsPresenting) return;
+        if (_confirmingEnd) return;
+        _confirmingEnd = true;
+        try
+        {
+            // The show window sits above everything; drop it so the prompt is
+            // visible on a single-display setup.
+            _showWindow?.SetConfirming(true);
+            var end = await ConfirmAsync(
+                "End the presentation?",
+                "The slide window will close and the audience display will return to the desktop.",
+                "End Presentation", "Keep Presenting");
+            if (end) EndPresentation();
+            else _showWindow?.SetConfirming(false);
+        }
+        finally { _confirmingEnd = false; }
+    }
+
+    private bool _confirmingEnd;
+
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmText, string cancelText)
+    {
+        var result = false;
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 430,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        var confirm = new Button { Content = confirmText, Padding = new Thickness(18, 6) };
+        var cancel = new Button { Content = cancelText, Padding = new Thickness(18, 6), IsDefault = true };
+        confirm.Click += (_, _) => { result = true; dialog.Close(); };
+        cancel.Click += (_, _) => { result = false; dialog.Close(); };
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8
+        };
+        buttons.Children.Add(confirm);
+        buttons.Children.Add(cancel);
+
+        var stack = new StackPanel { Margin = new Thickness(20), Spacing = 16 };
+        stack.Children.Add(new TextBlock
+        {
+            Text = title, FontSize = 15, FontWeight = FontWeight.SemiBold
+        });
+        stack.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+        stack.Children.Add(buttons);
+        dialog.Content = stack;
+
+        await dialog.ShowDialog(this);
+        return result;
     }
 
     private void StartPresentation()
@@ -491,6 +617,8 @@ public sealed class MainWindow : Window
 
         _presentButton.Content = "■  End";
         _camera.RefreshDevices();
+        MoveTransport(toConsole: true);
+        _endButton.IsVisible = true;
         _consoleGrid.IsVisible = true;
         _timer.Start();
         OnStateChanged();
@@ -510,6 +638,8 @@ public sealed class MainWindow : Window
 
         _camera.Stop();
         _presentButton.Content = "▶  Present";
+        MoveTransport(toConsole: false);
+        _endButton.IsVisible = false;
         _consoleGrid.IsVisible = false;
         OnStateChanged();
     }
@@ -523,7 +653,7 @@ public sealed class MainWindow : Window
             case Key.Left or Key.Up or Key.PageUp:
                 _state.GoPrevious(); e.Handled = true; break;
             case Key.Escape when _state.IsPresenting:
-                EndPresentation(); e.Handled = true; break;
+                RequestEndPresentation(); e.Handled = true; break;
             case Key.F5:
                 TogglePresentation(); e.Handled = true; break;
             case Key.O when e.KeyModifiers.HasFlag(KeyModifiers.Control):
@@ -570,9 +700,39 @@ public sealed class MainWindow : Window
         Console.WriteLine($"TIMING thumbnails-50: {sw.ElapsedMilliseconds}ms");
     }
 
+    /// <summary>Re-parents the prev/counter/next controls between the bottom bar
+    /// and the console. Avalonia allows a control only one parent, so they move
+    /// rather than being duplicated.</summary>
+    private void MoveTransport(bool toConsole)
+    {
+        var from = toConsole ? _browserTransport : _consoleTransport;
+        var to = toConsole ? _consoleTransport : _browserTransport;
+        foreach (var control in new Control[] { _prevButton, _status, _nextButton })
+        {
+            from.Children.Remove(control);
+            if (!to.Children.Contains(control)) to.Children.Add(control);
+        }
+    }
+
+    /// <summary>Sidebar opens at ~30% of the window; afterwards the user's drag
+    /// is left alone.</summary>
+    private void SizeSidebar()
+    {
+        if (_sidebarSized || _sidebarColumn == null || Bounds.Width < 100) return;
+        _sidebarSized = true;
+        _sidebarColumn.Width = new GridLength(Math.Clamp(Bounds.Width * 0.30, 220, 560), GridUnitType.Pixel);
+    }
+
     protected override void OnResized(WindowResizedEventArgs e)
     {
         base.OnResized(e);
+        SizeSidebar();
         if (_state.Presentation != null) RenderStage();
+    }
+
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        SizeSidebar();
     }
 }

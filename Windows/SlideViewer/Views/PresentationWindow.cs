@@ -62,6 +62,15 @@ public sealed class PresentationWindow : Window
         }
     }
 
+    /// <summary>While the end-presentation prompt is up, stop floating above
+    /// everything so the dialog isn't hidden behind the show on a single-display
+    /// setup; restored on cancel.</summary>
+    public void SetConfirming(bool confirming)
+    {
+        Topmost = !confirming;
+        if (!confirming) Activate();
+    }
+
     public void Refresh()
     {
         var size = new Size(Bounds.Width, Bounds.Height);

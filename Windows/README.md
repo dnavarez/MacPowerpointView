@@ -52,8 +52,13 @@ autoshapes with solid/gradient/picture fills; group shapes and connectors;
 placeholder, background and shape inheritance from layouts and masters; theme
 colors and fonts; click-triggered animation builds (including
 paragraph-by-paragraph); thumbnail navigator; and presentation mode on a second
-display with a presenter console (current/next slide, build counter, elapsed
-timer, and a camera preview with device selection).
+display with a presenter console (live slide with the transport beneath it,
+build counter, elapsed timer, and a camera preview with device selection).
+
+The slide list is the navigator: it opens at ~30% of the window, is freely
+draggable, scales its thumbnails to the width chosen, and keeps the live slide
+centred with LIVE/NEXT markers — so upcoming slides are read there rather than
+from a separate pane. Esc asks before ending a presentation.
 
 ## Differences from the macOS build
 
