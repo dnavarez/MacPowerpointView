@@ -396,7 +396,7 @@ public sealed class MainWindow : Window
         if (column < 50) column = 360;
         var needed = Math.Max(90, column - 64);   // number, badge, padding, scrollbar
         // Round up to a step so small drags don't trigger constant re-rendering.
-        return Math.Clamp(Math.Ceiling(needed / 60) * 60, 180, 720);
+        return Math.Clamp(Math.Ceiling(needed / 60) * 60, 180, 420);
     }
 
     private readonly List<Border> _thumbFrames = new();
@@ -416,10 +416,15 @@ public sealed class MainWindow : Window
         // bitmaps fill in on the dispatcher afterwards.
         for (int i = 0; i < pres.Slides.Count; i++)
         {
-            // Uniform + stretch: the thumbnail always scales to the column it is
-            // given. A fixed Width computed before layout overflows a narrower
-            // sidebar and gets clipped, which crops the slide instead of
-            // shrinking it.
+            // The thumbnail's displayed size comes from layout alone: no Width is
+            // set, Uniform scales the bitmap to whatever the column gives, and
+            // the list measures rows against its viewport (horizontal scrolling
+            // is disabled). Whatever size the bitmap happens to be, it cannot
+            // overflow and be clipped.
+            //
+            // This replaced a fixed Width taken from the sidebar column before
+            // layout had assigned one: it fell back to a default far wider than
+            // the column, so slides were cropped instead of scaled.
             var image = new Image
             {
                 Stretch = Stretch.Uniform,
@@ -778,6 +783,30 @@ public sealed class MainWindow : Window
 
     /// <summary>Measures whether thumbnail rows actually fit the list viewport.
     /// A row wider than the viewport is clipped, which crops the slide.</summary>
+    /// <summary>Forces a deliberate mismatch — bitmaps far wider than the column —
+    /// and confirms they scale rather than overflow at every sidebar width.</summary>
+    public void StressThumbnailFit()
+    {
+        foreach (var columnWidth in new double[] { 400, 300, 220, 180, 140 })
+        {
+            if (_sidebarColumn == null) return;
+            _sidebarColumn.Width = new GridLength(columnWidth, GridUnitType.Pixel);
+            _rebuildingThumbnails = true;              // keep the oversized bitmaps
+            Dispatcher.UIThread.RunJobs();
+            Dispatcher.UIThread.RunJobs(DispatcherPriority.Loaded);
+            _rebuildingThumbnails = false;
+
+            var scroll = _thumbs.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+            var item = _thumbs.GetVisualDescendants().OfType<ListBoxItem>().FirstOrDefault();
+            var img = item?.GetVisualDescendants().OfType<Image>().FirstOrDefault();
+            var bmp = (img?.Source as Avalonia.Media.Imaging.Bitmap)?.Size.Width ?? -1;
+            var overflow = (scroll?.Extent.Width ?? 0) > (scroll?.Viewport.Width ?? 0) + 1;
+            Console.WriteLine($"STRESS column={columnWidth:F0} bitmap={bmp:F0} " +
+                              $"image={img?.Bounds.Width ?? -1:F0} overflow={overflow} " +
+                              $"{(overflow ? "<<< CLIPPED" : "ok")}");
+        }
+    }
+
     public void ReportThumbnailFit(bool narrowSidebar = false)
     {
         if (narrowSidebar && _sidebarColumn != null)
