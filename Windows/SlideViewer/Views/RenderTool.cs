@@ -15,6 +15,20 @@ namespace SlideViewer.Views;
 /// </summary>
 public static class RenderTool
 {
+    /// <summary>Rasterises a thumbnail at a given scaling so the DPI-awareness of
+    /// the sidebar can be verified: at 2x the PNG must contain 2x the pixels.</summary>
+    public static int RunThumb(string deckPath, int slideIndex, string outPath, double width, double scaling)
+    {
+        using var parser = new PptxParser(deckPath);
+        var pres = parser.Parse();
+        if (slideIndex < 0 || slideIndex >= pres.Slides.Count) return 1;
+        var bitmap = SlideRenderer.RenderToBitmap(pres.Slides[slideIndex], pres.Size, width, scaling);
+        using var stream = File.Create(outPath);
+        bitmap.Save(stream);
+        Console.WriteLine($"THUMB scaling={scaling} logical={width:F0} pixels={bitmap.PixelSize.Width}x{bitmap.PixelSize.Height} -> {outPath}");
+        return 0;
+    }
+
     public static int Run(string deckPath, int slideIndex, string outPath, double width = 1280)
     {
         using var parser = new PptxParser(deckPath);

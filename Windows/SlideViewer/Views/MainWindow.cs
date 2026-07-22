@@ -434,7 +434,7 @@ public sealed class MainWindow : Window
         var end = Math.Min(start + batch, images.Count);
         for (int i = start; i < end; i++)
         {
-            try { images[i].Source = SlideRenderer.RenderToBitmap(pres.Slides[i], pres.Size, _thumbWidth); }
+            try { images[i].Source = SlideRenderer.RenderToBitmap(pres.Slides[i], pres.Size, _thumbWidth, RenderScaling); }
             catch { /* a thumbnail is cosmetic; never break opening a deck */ }
         }
         if (end < images.Count)
@@ -788,6 +788,7 @@ public sealed class MainWindow : Window
     {
         base.OnResized(e);
         SizeSidebar();
+        CheckRenderScaling();
         if (_state.Presentation != null) RenderStage();
     }
 
@@ -795,5 +796,18 @@ public sealed class MainWindow : Window
     {
         base.OnOpened(e);
         SizeSidebar();
+        _lastRenderScaling = RenderScaling;
+    }
+
+    private double _lastRenderScaling = 1;
+
+    /// <summary>Moving the window to a display with different scaling changes the
+    /// pixel density the thumbnails were rasterised for; re-render so they stay
+    /// sharp instead of being upscaled.</summary>
+    private void CheckRenderScaling()
+    {
+        if (Math.Abs(RenderScaling - _lastRenderScaling) <= 0.01) return;
+        _lastRenderScaling = RenderScaling;
+        if (_state.Presentation != null) BuildThumbnails();
     }
 }

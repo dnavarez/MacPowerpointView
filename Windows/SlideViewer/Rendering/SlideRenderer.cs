@@ -396,16 +396,31 @@ public static class SlideRenderer
     ///
     /// Thumbnails use this instead of live control trees: a sidebar holding one
     /// full visual tree per slide (each retaining decoded background images)
-    /// makes selection and scrolling visibly stutter on large decks.</summary>
-    public static Bitmap RenderToBitmap(Slide slide, Size slideSize, double width)
+    /// makes selection and scrolling visibly stutter on large decks.
+    ///
+    /// <paramref name="scaling"/> must be the target surface's render scaling
+    /// (1.0, 1.5, 2.0…). Rasterising at a fixed 96 DPI and then displaying the
+    /// result at logical size on a HiDPI screen makes Windows upscale it, which
+    /// is exactly what makes thumbnails look blurry. Rendering at
+    /// width x scaling device pixels with a matching DPI keeps them 1:1 and
+    /// sharp.</summary>
+    public static Bitmap RenderToBitmap(Slide slide, Size slideSize, double width, double scaling = 1.0)
     {
+        scaling = Math.Clamp(scaling <= 0 ? 1.0 : scaling, 1.0, 4.0);
         var height = Math.Max(1, width * slideSize.Height / slideSize.Width);
+
+        // Lay the slide out at logical size; the DPI on the target does the
+        // upscaling, so text and vectors are rendered at full device resolution
+        // rather than being magnified afterwards.
         var control = Render(slide, slideSize, width, height);
         var size = new Size(width, height);
         control.Measure(size);
         control.Arrange(new Rect(size));
+
         var target = new RenderTargetBitmap(
-            new PixelSize(Math.Max(1, (int)width), Math.Max(1, (int)height)), new Vector(96, 96));
+            new PixelSize(Math.Max(1, (int)Math.Round(width * scaling)),
+                          Math.Max(1, (int)Math.Round(height * scaling))),
+            new Vector(96 * scaling, 96 * scaling));
         target.Render(control);
         return target;
     }

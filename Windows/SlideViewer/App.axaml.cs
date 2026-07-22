@@ -16,6 +16,16 @@ public partial class App : Application
             var args = desktop.Args ?? Array.Empty<string>();
 
             // Headless verification mode: --render <deck.pptx> <index> <out.png>
+            var thumbAt = Array.IndexOf(args, "--thumb");
+            if (thumbAt >= 0 && args.Length >= thumbAt + 5)
+            {
+                var code = Views.RenderTool.RunThumb(args[thumbAt + 1],
+                    int.Parse(args[thumbAt + 2]), args[thumbAt + 3],
+                    double.Parse(args[thumbAt + 4]), double.Parse(args[thumbAt + 5]));
+                Environment.Exit(code);
+                return;
+            }
+
             var renderAt = Array.IndexOf(args, "--render");
             if (renderAt >= 0 && args.Length >= renderAt + 4)
             {
