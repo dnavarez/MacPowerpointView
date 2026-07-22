@@ -50,6 +50,7 @@ public partial class App : Application
                     w.RunSelfTest(args.Contains("--camera"));
                     if (args.Contains("--timing")) w.RunTiming();
                     if (args.Contains("--center")) w.VerifyCentering();
+                    if (args.Contains("--geometry")) w.ReportGeometry();
                     Console.WriteLine("SELFTEST OK");
                 }
                 catch (Exception ex)

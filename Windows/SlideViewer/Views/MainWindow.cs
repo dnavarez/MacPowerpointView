@@ -43,11 +43,10 @@ public sealed class MainWindow : Window
     public MainWindow()
     {
         Title = "SlideViewer";
-        Width = 1280;
-        Height = 780;
-        MinWidth = 900;
-        MinHeight = 560;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        MinWidth = 820;
+        MinHeight = 520;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        ApplyLaunchSize();
         Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -62,6 +61,31 @@ public sealed class MainWindow : Window
         DragDrop.SetAllowDrop(this, true);
 
         ShowEmptyState(true);
+    }
+
+    /// <summary>Opens at 75% of the screen's working height (which excludes the
+    /// taskbar), centred horizontally and anchored at the top — so the desktop
+    /// and the window's own title bar stay visible instead of the window
+    /// appearing full-screen.</summary>
+    private void ApplyLaunchSize()
+    {
+        var screen = Screens.Primary ?? Screens.All.FirstOrDefault();
+        if (screen == null) { Width = 1180; Height = 720; return; }
+
+        var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
+        var work = screen.WorkingArea;                 // device pixels
+        var workWidth = work.Width / scaling;          // logical units
+        var workHeight = work.Height / scaling;
+
+        var height = Math.Max(MinHeight, workHeight * 0.75);
+        // 16:10 suits a 16:9 slide plus the sidebar and controls.
+        var width = Math.Clamp(height * 1.6, MinWidth, workWidth);
+
+        Width = width;
+        Height = height;
+        Position = new PixelPoint(
+            (int)(work.X + (work.Width - width * scaling) / 2),
+            work.Y);
     }
 
     // ── Layout ──────────────────────────────────────────────────────────────
@@ -353,9 +377,13 @@ public sealed class MainWindow : Window
     /// divider scales them and how many fit follows from the size chosen.</summary>
     private double CurrentThumbWidth()
     {
-        var column = _sidebarColumn?.ActualWidth ?? 360;
+        // ActualWidth is only meaningful after layout; fall back to the list's
+        // own bounds, then the configured column width, then a sane default.
+        var column = _sidebarColumn?.ActualWidth ?? 0;
+        if (column < 50) column = _thumbs.Bounds.Width;
+        if (column < 50 && _sidebarColumn?.Width.IsAbsolute == true) column = _sidebarColumn.Width.Value;
         if (column < 50) column = 360;
-        return Math.Max(90, column - 64);   // slide number, padding, scrollbar
+        return Math.Max(90, column - 64);   // slide number, badge, padding, scrollbar
     }
 
     private readonly List<Border> _thumbFrames = new();
@@ -366,7 +394,6 @@ public sealed class MainWindow : Window
         if (_state.Presentation is not { } pres) return;
 
         _thumbWidth = CurrentThumbWidth();
-        var thumbHeight = _thumbWidth * pres.Size.Height / pres.Size.Width;
         _thumbFrames.Clear();
         _thumbBadges.Clear();
         var items = new List<Control>();
@@ -376,21 +403,35 @@ public sealed class MainWindow : Window
         // bitmaps fill in on the dispatcher afterwards.
         for (int i = 0; i < pres.Slides.Count; i++)
         {
+            // Uniform + stretch: the thumbnail always scales to the column it is
+            // given. A fixed Width computed before layout overflows a narrower
+            // sidebar and gets clipped, which crops the slide instead of
+            // shrinking it.
             var image = new Image
             {
-                Width = _thumbWidth, Height = thumbHeight, Stretch = Stretch.Fill
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Top
             };
             images.Add(image);
 
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            row.Children.Add(new TextBlock
+            var row = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+                Margin = new Thickness(0, 1)
+            };
+
+            var number = new TextBlock
             {
                 Text = (i + 1).ToString(),
                 Width = 26,
+                Margin = new Thickness(0, 0, 6, 0),
                 TextAlignment = TextAlignment.Right,
                 Foreground = Brushes.Gray,
                 VerticalAlignment = VerticalAlignment.Center
-            });
+            };
+            row.Children.Add(number);
+
             var frame = new Border
             {
                 BorderBrush = new SolidColorBrush(Color.FromArgb(80, 200, 200, 200)),
@@ -398,6 +439,7 @@ public sealed class MainWindow : Window
                 Background = Brushes.White,
                 Child = image
             };
+            Grid.SetColumn(frame, 1);
             _thumbFrames.Add(frame);
             row.Children.Add(frame);
 
@@ -405,9 +447,11 @@ public sealed class MainWindow : Window
             {
                 FontSize = 10,
                 FontWeight = FontWeight.Bold,
+                Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 IsVisible = false
             };
+            Grid.SetColumn(badge, 2);
             _thumbBadges.Add(badge);
             row.Children.Add(badge);
             items.Add(row);
@@ -421,6 +465,11 @@ public sealed class MainWindow : Window
 
         _thumbnailToken++;
         RenderThumbnails(pres, images, 0, _thumbnailToken);
+
+        // The first build can run before the sidebar has its real width; once
+        // layout settles, re-render at the true size so thumbnails are sharp
+        // rather than a scaled-down bitmap.
+        Dispatcher.UIThread.Post(RebuildThumbnailsForWidth, DispatcherPriority.Loaded);
     }
 
     private int _thumbnailToken;
@@ -444,12 +493,16 @@ public sealed class MainWindow : Window
 
     /// <summary>Re-rasterises thumbnails after the sidebar is resized, but only
     /// when the width actually changed meaningfully.</summary>
+    private bool _rebuildingThumbnails;
+
     private void RebuildThumbnailsForWidth()
     {
-        if (_state.Presentation == null) return;
+        if (_state.Presentation == null || _rebuildingThumbnails) return;
         var width = CurrentThumbWidth();
         if (Math.Abs(width - _thumbWidth) < 8) return;
-        BuildThumbnails();
+        _rebuildingThumbnails = true;
+        try { BuildThumbnails(); }
+        finally { _rebuildingThumbnails = false; }
     }
 
     private void OnStateChanged()
@@ -708,6 +761,23 @@ public sealed class MainWindow : Window
         _state.GoPrevious();
         EndPresentation();
         _state.GoTo(0);
+    }
+
+    /// <summary>Reports the launch geometry so it can be checked against the
+    /// screen's working area rather than eyeballed.</summary>
+    public void ReportGeometry()
+    {
+        var screen = Screens.Primary ?? Screens.All.FirstOrDefault();
+        if (screen == null) { Console.WriteLine("GEOMETRY: no screen"); return; }
+        var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
+        var workW = screen.WorkingArea.Width / scaling;
+        var workH = screen.WorkingArea.Height / scaling;
+        Console.WriteLine($"GEOMETRY work={workW:F0}x{workH:F0} scaling={scaling:F2} " +
+                          $"window={Width:F0}x{Height:F0} " +
+                          $"heightPct={(Height / workH * 100):F0}% widthPct={(Width / workW * 100):F0}% " +
+                          $"pos={Position.X},{Position.Y}");
+        var thumb = CurrentThumbWidth();
+        Console.WriteLine($"GEOMETRY sidebarColumn={_sidebarColumn?.ActualWidth:F0} thumbWidth={thumb:F0} rendered={_thumbWidth:F0}");
     }
 
     /// <summary>Checks that the live slide really lands in the middle of the
