@@ -65,6 +65,21 @@ final class PresentationWindowController {
         }
     }
 
+    /// While the end-presentation confirmation is up, drop the show window below
+    /// the console and bring the app forward — at `.screenSaver` level it would
+    /// otherwise cover the dialog on a single-display setup, and the app would
+    /// look frozen.
+    func setConfirming(_ confirming: Bool) {
+        guard let window else { return }
+        if confirming {
+            window.level = .normal
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.level = .screenSaver
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
     func close() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil

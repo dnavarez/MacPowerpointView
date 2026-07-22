@@ -35,16 +35,34 @@ final class PresentationStore: ObservableObject {
     /// When the current presentation started; drives the console's elapsed timer.
     @Published var presentationStartDate: Date?
 
+    /// Set while the "End presentation?" confirmation is on screen. Esc asks
+    /// rather than ending outright — an accidental keypress mid-service should
+    /// not drop the audience back to the desktop.
+    @Published var isConfirmingEnd = false
+
+    /// Called by Esc from either window.
+    func requestEndPresentation() {
+        guard isPresenting else { return }
+        isConfirmingEnd = true
+        presentationWindow.setConfirming(true)
+    }
+
+    func cancelEndPresentation() {
+        isConfirmingEnd = false
+        presentationWindow.setConfirming(false)
+    }
+
     func startPresentation() {
         guard presentation != nil, !isPresenting else { return }
         isPresenting = true
         buildIndex = 0
         presentationStartDate = Date()
-        presentationWindow.onEnd = { [weak self] in self?.endPresentation() }
+        presentationWindow.onEnd = { [weak self] in self?.requestEndPresentation() }
         presentationWindow.show(store: self)
     }
 
     func endPresentation() {
+        isConfirmingEnd = false
         presentationWindow.close()
         isPresenting = false
         presentationStartDate = nil

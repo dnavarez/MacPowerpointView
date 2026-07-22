@@ -5,6 +5,13 @@ import AppKit
 struct ContentView: View {
     @ObservedObject var store: PresentationStore
     @State private var isDropTargeted = false
+    /// Captured once so dragging the divider isn't undone by re-layout.
+    @State private var sidebarIdealWidth: CGFloat?
+
+    /// Sidebar starts at ~30% of the window so thumbnails are readable at a glance.
+    private func defaultSidebarWidth(for windowWidth: CGFloat) -> CGFloat {
+        min(max(windowWidth * 0.30, 220), 560)
+    }
 
     var body: some View {
         Group {
@@ -18,6 +25,15 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
+        .confirmationDialog("End the presentation?",
+                            isPresented: Binding(get: { store.isConfirmingEnd },
+                                                 set: { if !$0 { store.cancelEndPresentation() } }),
+                            titleVisibility: .visible) {
+            Button("End Presentation", role: .destructive) { store.endPresentation() }
+            Button("Keep Presenting", role: .cancel) { store.cancelEndPresentation() }
+        } message: {
+            Text("The slide window will close and the audience display will return to the desktop.")
+        }
         .alert("Could not open presentation",
                isPresented: Binding(get: { store.errorMessage != nil },
                                     set: { if !$0 { store.errorMessage = nil } })) {
@@ -30,10 +46,16 @@ struct ContentView: View {
     // MARK: - Loaded layout
 
     private var loadedView: some View {
-        NavigationSplitView {
-            ThumbnailSidebar(store: store)
-                .navigationSplitViewColumnWidth(min: 160, ideal: 200, max: 260)
-        } detail: {
+        GeometryReader { geo in
+            NavigationSplitView {
+                ThumbnailSidebar(store: store)
+                    // The ideal is captured once: recomputing it on every layout
+                    // pass would snap the divider back while the user drags it.
+                    .navigationSplitViewColumnWidth(
+                        min: 170,
+                        ideal: sidebarIdealWidth ?? defaultSidebarWidth(for: geo.size.width),
+                        max: 900)
+            } detail: {
             if store.isPresenting {
                 PresenterConsoleView(store: store)
             } else {
@@ -48,6 +70,12 @@ struct ContentView: View {
                     SlideControls(store: store)
                 }
             }
+            }
+        .onAppear {
+            if sidebarIdealWidth == nil {
+                sidebarIdealWidth = defaultSidebarWidth(for: geo.size.width)
+            }
+        }
         }
         .navigationTitle(store.fileName ?? "SlideViewer")
         .toolbar {
@@ -145,28 +173,46 @@ struct EmptyStateView: View {
 struct ThumbnailSidebar: View {
     @ObservedObject var store: PresentationStore
 
+    /// Thumbnails fill the sidebar's width, so dragging the divider scales them
+    /// and the number of visible slides follows from the size the user chose.
+    private func thumbnailWidth(size: CGSize) -> CGFloat {
+        let numberColumn: CGFloat = 30      // slide number + spacing
+        return max(60, size.width - numberColumn - 34)
+    }
+
     var body: some View {
+        GeometryReader { geo in
         ScrollViewReader { proxy in
             List(selection: Binding(
                 get: { store.currentIndex },
                 set: { if let v = $0 { store.go(to: v) } })
             ) {
                 if let pres = store.presentation {
+                    let aspect = pres.size.width / pres.size.height
+                    let width = thumbnailWidth(size: geo.size)
                     ForEach(Array(pres.slides.enumerated()), id: \.offset) { index, slide in
+                        let isCurrent = index == store.currentIndex
+                        let isNext = index == store.currentIndex + 1
                         HStack(spacing: 8) {
                             Text("\(index + 1)")
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(isCurrent ? Color.accentColor : .secondary)
+                                .fontWeight(isCurrent ? .bold : .regular)
                                 .frame(width: 22, alignment: .trailing)
                             SlideView(slide: slide, slideSize: pres.size)
-                                .frame(width: 150, height: 150 * pres.size.height / pres.size.width)
+                                .frame(width: width, height: width / aspect)
                                 .background(Color.white)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 4)
-                                        .strokeBorder(index == store.currentIndex ? Color.accentColor : Color.gray.opacity(0.3),
-                                                      lineWidth: index == store.currentIndex ? 2 : 1)
+                                        .strokeBorder(borderColor(isCurrent: isCurrent, isNext: isNext),
+                                                      lineWidth: isCurrent ? 3 : 1)
                                 )
+                            if store.isPresenting && (isCurrent || isNext) {
+                                Text(isCurrent ? "LIVE" : "NEXT")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(isCurrent ? Color.red : .secondary)
+                            }
                         }
                         .padding(.vertical, 2)
                         .tag(index)
@@ -175,9 +221,21 @@ struct ThumbnailSidebar: View {
                 }
             }
             .onChange(of: store.currentIndex) { _, newValue in
+                // Keep the live slide centred so previous and upcoming slides are
+                // visible above and below it.
                 withAnimation { proxy.scrollTo(newValue, anchor: .center) }
             }
+            .onAppear {
+                proxy.scrollTo(store.currentIndex, anchor: .center)
+            }
         }
+        }
+    }
+
+    private func borderColor(isCurrent: Bool, isNext: Bool) -> Color {
+        if isCurrent { return .red }
+        if isNext && store.isPresenting { return .accentColor }
+        return .gray.opacity(0.3)
     }
 }
 
@@ -223,14 +281,16 @@ struct SlideControls: View {
 // MARK: - Presenter console
 
 /// Shown in the main window while presenting: the slide the audience currently
-/// sees, a preview of the next slide, and transport controls.
+/// sees, the camera below it, and transport controls. Upcoming slides are read
+/// from the sidebar (which keeps the live slide centred) rather than a separate
+/// next-slide pane.
 struct PresenterConsoleView: View {
     @ObservedObject var store: PresentationStore
     @StateObject private var camera = CameraManager()
 
     var body: some View {
         VStack(spacing: 0) {
-            HSplitView {
+            VSplitView {
                 // Current slide (what the audience sees now).
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -263,55 +323,32 @@ struct PresenterConsoleView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6)
                                 .strokeBorder(Color.red.opacity(0.7), lineWidth: 2))
                     }
+                    consoleTransport
+                        .padding(.top, 4)
                     Spacer(minLength: 0)
                 }
                 .padding(16)
-                .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, minHeight: 240, maxHeight: .infinity, alignment: .top)
 
-                // Right column: next slide over camera, each pane resizable.
-                VSplitView {
-                    nextSlidePane
-                        .padding(12)
-                        .frame(minHeight: 150, maxHeight: .infinity)
-                    cameraPane
-                        .padding(12)
-                        .frame(minHeight: 110, maxHeight: .infinity)
-                }
-                .frame(minWidth: 240, idealWidth: 330, maxWidth: 640)
+                // Camera sits directly under the live slide; drag to resize.
+                cameraPane
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 140, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
-            // Transport controls.
             HStack(spacing: 12) {
-                Button {
-                    store.goPrevious()
-                } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .disabled(!store.canGoPrevious)
-
-                Text("Slide \(store.currentIndex + 1) of \(store.slideCount)")
-                    .font(.callout.monospacedDigit())
-                    .frame(minWidth: 140)
-
-                Button {
-                    store.goNext()
-                } label: {
-                    Image(systemName: "chevron.right")
-                }
-                .disabled(!store.canGoNext)
-
                 Text("← → to navigate · esc to end")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                    .padding(.leading, 8)
 
                 Spacer()
 
                 Button(role: .destructive) {
-                    store.endPresentation()
+                    store.requestEndPresentation()
                 } label: {
                     Label("End Presentation", systemImage: "stop.fill")
                 }
@@ -324,31 +361,34 @@ struct PresenterConsoleView: View {
         .onDisappear { camera.stop() }
     }
 
-    // MARK: Next slide pane
+    // MARK: Transport, directly beneath the live slide
 
-    private var nextSlidePane: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(store.nextSlide != nil ? "Next — Slide \(store.currentIndex + 2)" : "Next",
-                  systemImage: "forward.end")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            if let next = store.nextSlide, let pres = store.presentation {
-                SlideView(slide: next, slideSize: pres.size, showShadow: false)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.gray.opacity(0.4), lineWidth: 1))
-            } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black.opacity(0.85))
-                    .overlay(
-                        Text("End of presentation")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    )
+    private var consoleTransport: some View {
+        HStack(spacing: 12) {
+            Spacer()
+            Button {
+                store.goPrevious()
+            } label: {
+                Label("Previous", systemImage: "chevron.left")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 34, height: 24)
             }
+            .disabled(!store.canGoPrevious)
+
+            Text("Slide \(store.currentIndex + 1) of \(store.slideCount)")
+                .font(.callout.monospacedDigit())
+                .frame(minWidth: 130)
+
+            Button {
+                store.goNext()
+            } label: {
+                Label("Next", systemImage: "chevron.right")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 34, height: 24)
+            }
+            .disabled(!store.canGoNext)
+            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Camera pane
