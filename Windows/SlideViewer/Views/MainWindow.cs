@@ -18,8 +18,9 @@ public sealed class MainWindow : Window
     private readonly DispatcherTimer _timer;
 
     private readonly ListBox _thumbs = new();
-    private readonly Panel _stage = new();
-    private readonly Panel _nextStage = new();
+    private readonly Panel _stage = new();          // browser view
+    private readonly Panel _consoleStage = new();   // presenter console, current slide
+    private readonly Panel _nextStage = new();      // presenter console, next slide
     private readonly TextBlock _status = new();
     private readonly TextBlock _nowLabel = new();
     private readonly TextBlock _nextLabel = new();
@@ -79,7 +80,6 @@ public sealed class MainWindow : Window
 
         var toolbar = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto") };
         toolbar.Children.Add(title);
-        var titleHost = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         Grid.SetColumn(openButton, 2);
         Grid.SetColumn(_presentButton, 3);
         toolbar.Children.Add(openButton);
@@ -124,7 +124,7 @@ public sealed class MainWindow : Window
         DockPanel.SetDock(nowHeader, Dock.Top);
         nowHeader.Margin = new Thickness(0, 0, 0, 8);
         nowPane.Children.Add(nowHeader);
-        nowPane.Children.Add(_stage);
+        nowPane.Children.Add(_consoleStage);
 
         var nextPane = new DockPanel();
         DockPanel.SetDock(_nextLabel, Dock.Top);
@@ -357,10 +357,12 @@ public sealed class MainWindow : Window
         if (_state.Presentation is not { } pres) return;
 
         _stage.Children.Clear();
-        var stageW = Math.Max(50, _stage.Bounds.Width > 10 ? _stage.Bounds.Width : 800);
-        var stageH = Math.Max(50, _stage.Bounds.Height > 10 ? _stage.Bounds.Height : 450);
+        _consoleStage.Children.Clear();
+        var target = _state.IsPresenting ? _consoleStage : _stage;
+        var stageW = Math.Max(50, target.Bounds.Width > 10 ? target.Bounds.Width : 800);
+        var stageH = Math.Max(50, target.Bounds.Height > 10 ? target.Bounds.Height : 450);
         if (_state.CurrentSlide is { } slide)
-            _stage.Children.Add(SlideRenderer.Render(slide, pres.Size, stageW, stageH));
+            target.Children.Add(SlideRenderer.Render(slide, pres.Size, stageW, stageH));
 
         _nextStage.Children.Clear();
         if (_state.IsPresenting)
@@ -479,6 +481,18 @@ public sealed class MainWindow : Window
             case Key.O when e.KeyModifiers.HasFlag(KeyModifiers.Control):
                 _ = OpenDialog(); e.Handled = true; break;
         }
+    }
+
+    /// <summary>Drives the risky UI paths once so failures surface in CI/builds
+    /// rather than on a user's machine.</summary>
+    public void RunSelfTest()
+    {
+        StartPresentation();
+        _state.GoNext();
+        _state.GoNext();
+        _state.GoPrevious();
+        EndPresentation();
+        _state.GoTo(0);
     }
 
     protected override void OnResized(WindowResizedEventArgs e)

@@ -12,5 +12,6 @@ Windows/dist/
 Windows/**/bin/
 Windows/**/obj/
 Windows/Installer/payload.zip
+Windows/*.zip
 Windows/installer/AppIcon.ico
 Windows/Installer/AppIcon.ico

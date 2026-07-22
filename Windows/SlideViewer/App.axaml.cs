@@ -25,6 +25,30 @@ public partial class App : Application
                 return;
             }
 
+            // Self-test: exercises window construction, opening a deck, thumbnail
+            // building, and entering/leaving presentation mode, then exits.
+            var selfTestAt = Array.IndexOf(args, "--selftest");
+            if (selfTestAt >= 0)
+            {
+                var deck = args.Length > selfTestAt + 1 ? args[selfTestAt + 1] : null;
+                var exit = 0;
+                try
+                {
+                    var w = new MainWindow();
+                    w.Show();
+                    if (deck != null && File.Exists(deck)) w.OpenFile(deck);
+                    w.RunSelfTest();
+                    Console.WriteLine("SELFTEST OK");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("SELFTEST FAILED: " + ex);
+                    exit = 1;
+                }
+                Environment.Exit(exit);
+                return;
+            }
+
             var window = new MainWindow();
             desktop.MainWindow = window;
 
