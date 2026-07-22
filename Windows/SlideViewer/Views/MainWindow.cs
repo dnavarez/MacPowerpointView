@@ -43,7 +43,7 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "SlideViewer 1.0.1";
+        Title = "SlideViewer 1.0.2";
         MinWidth = 820;
         MinHeight = 520;
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -198,7 +198,7 @@ public sealed class MainWindow : Window
 
         var hint = new TextBlock
         {
-            Text = "← → navigate · Esc ends the show",
+            Text = "← → navigate · Esc ends the show · Ctrl+Shift+D saves diagnostics",
             Foreground = Brushes.DimGray,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(14, 0)
@@ -336,7 +336,7 @@ public sealed class MainWindow : Window
         {
             EndPresentation();
             _state.Open(path);
-            Title = $"{_state.FileName} — SlideViewer 1.0.1";
+            Title = $"{_state.FileName} — SlideViewer 1.0.2";
             ShowEmptyState(false);
             _presentButton.IsEnabled = true;
             BuildThumbnails();
@@ -761,6 +761,9 @@ public sealed class MainWindow : Window
                 TogglePresentation(); e.Handled = true; break;
             case Key.O when e.KeyModifiers.HasFlag(KeyModifiers.Control):
                 _ = OpenDialog(); e.Handled = true; break;
+            case Key.D when e.KeyModifiers.HasFlag(KeyModifiers.Control)
+                         && e.KeyModifiers.HasFlag(KeyModifiers.Shift):
+                WriteDiagnostics(); e.Handled = true; break;
         }
     }
 
@@ -923,6 +926,24 @@ public sealed class MainWindow : Window
         if (_sidebarSized || _sidebarColumn == null || Bounds.Width < 100) return;
         _sidebarSized = true;
         _sidebarColumn.Width = new GridLength(Math.Clamp(Bounds.Width * 0.30, 220, 560), GridUnitType.Pixel);
+    }
+
+    /// <summary>Ctrl+Shift+D: saves thumbnail bitmaps and every measurement that
+    /// governs their sizing to a folder on the Desktop, and opens it.</summary>
+    private async void WriteDiagnostics()
+    {
+        try
+        {
+            var folder = Diagnostics.Write(this, _thumbs, _state.Presentation, _thumbWidth, _sidebarColumn);
+            await ConfirmAsync("Diagnostics saved",
+                $"Saved thumbnail images and measurements to:\n\n{folder}\n\n" +
+                "Send that folder along and the thumbnail sizing can be diagnosed exactly.",
+                "OK", "Close");
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Log(ex, "Diagnostics");
+        }
     }
 
     protected override void OnResized(WindowResizedEventArgs e)

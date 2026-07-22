@@ -10,8 +10,8 @@
     <RootNamespace>SlideViewerSetup</RootNamespace>
     <Product>SlideViewer Setup</Product>
     <AssemblyTitle>SlideViewer Setup</AssemblyTitle>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.2</Version>
+    <FileVersion>1.0.2.0</FileVersion>
     <ApplicationIcon>AppIcon.ico</ApplicationIcon>
     <!-- One compressed file the user can copy anywhere and double-click. -->
     <PublishSingleFile>true</PublishSingleFile>

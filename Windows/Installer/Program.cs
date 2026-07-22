@@ -16,7 +16,7 @@ internal static class Program
 {
     private const string AppName = "SlideViewer";
     private const string AppExe = "SlideViewer.exe";
-    private const string Version = "1.0.1";
+    private const string Version = "1.0.2";
     private const string Publisher = "SlideViewer";
     private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\SlideViewer";
     private const string UninstallerName = "Uninstall.exe";
