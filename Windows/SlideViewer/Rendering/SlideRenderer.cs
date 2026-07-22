@@ -268,16 +268,55 @@ public static class SlideRenderer
 
     private static Control TextBoxControl(TextFrame box, Rect frame, double scale, HashSet<int>? hiddenParas)
     {
+        // Shrink-to-fit is applied by scaling the FONT SIZES, not by wrapping the
+        // text in a render transform.
+        //
+        // The previous approach arranged the text wider than its box and scaled
+        // it back with a ScaleTransform. Render transforms don't participate in
+        // layout, and an offscreen RenderTargetBitmap can draw them differently
+        // from on-screen rendering — so the text was drawn at its oversized
+        // arranged width and spilled past the slide edge, which cropped
+        // thumbnails. Scaling the font sizes is pure layout and therefore
+        // renders identically everywhere.
+        var shrink = ShrinkFactor(box, frame, scale, hiddenParas);
+        return BuildTextBody(box, scale, shrink, hiddenParas);
+    }
+
+    /// <summary>Measures the text and returns how much the font sizes must shrink
+    /// for it to fit the box, emulating PowerPoint autofit and absorbing
+    /// font-substitution metric drift.</summary>
+    private static double ShrinkFactor(TextFrame box, Rect frame, double scale, HashSet<int>? hiddenParas)
+    {
+        if (!box.AutoShrink || frame.Height <= 0 || frame.Width <= 0) return 1.0;
+
+        var availableWidth = Math.Max(1, (frame.Width - box.Insets.Leading - box.Insets.Trailing) * scale);
+        var targetHeight = Math.Max(1, (frame.Height - box.Insets.Top - box.Insets.Bottom) * scale);
+
+        var shrink = 1.0;
+        // Shrinking changes wrapping, which changes height; a second pass settles it.
+        for (int pass = 0; pass < 2; pass++)
+        {
+            var probe = BuildTextBody(box, scale, shrink, hiddenParas);
+            probe.Measure(new Size(availableWidth, double.PositiveInfinity));
+            var natural = probe.DesiredSize.Height;
+            if (natural <= targetHeight || natural <= 0) break;
+            shrink = Math.Max(0.35, shrink * (targetHeight / natural));
+        }
+        return shrink;
+    }
+
+    private static Control BuildTextBody(TextFrame box, double scale, double shrink, HashSet<int>? hiddenParas)
+    {
         var stack = new StackPanel { Orientation = Orientation.Vertical };
 
         for (int i = 0; i < box.Paragraphs.Count; i++)
         {
             var para = box.Paragraphs[i];
             if (hiddenParas?.Contains(i) == true) continue;
-            stack.Children.Add(ParagraphControl(para, scale));
+            stack.Children.Add(ParagraphControl(para, scale, shrink));
         }
 
-        var padded = new Border
+        return new Border
         {
             Padding = new Thickness(box.Insets.Leading * scale, box.Insets.Top * scale,
                                     box.Insets.Trailing * scale, box.Insets.Bottom * scale),
@@ -290,22 +329,13 @@ public static class SlideRenderer
             },
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-
-        // Shrink-to-fit: emulates PowerPoint autofit and absorbs font-metric
-        // drift from substitution, so text never gets clipped.
-        if (box.AutoShrink && frame.Height > 0)
-            return new ShrinkToFit
-            {
-                Child = padded,
-                TargetHeight = frame.Height * scale,
-                VerticalAlignment = VerticalAlignment.Stretch
-            };
-
-        return padded;
     }
 
-    private static Control ParagraphControl(Paragraph para, double scale)
+    private static Control ParagraphControl(Paragraph para, double scale, double shrink)
     {
+        // `shrink` is the autofit factor; it scales text and the spacing that
+        // goes with it, so the paragraph fits by layout rather than by transform.
+        var effective = scale * shrink;
         var baseSize = para.Runs.FirstOrDefault()?.FontSize ?? 18;
         var leftEdge = Math.Max(0, para.MarginLeft + para.Indent);
         var hang = para.Bullet != null
@@ -315,7 +345,7 @@ public static class SlideRenderer
         var text = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
-            LineHeight = para.LineSpacing > 1.01 ? baseSize * scale * para.LineSpacing : double.NaN,
+            LineHeight = para.LineSpacing > 1.01 ? baseSize * effective * para.LineSpacing : double.NaN,
             TextAlignment = para.Alignment switch
             {
                 ParagraphAlignment.Center => TextAlignment.Center,
@@ -329,7 +359,7 @@ public static class SlideRenderer
         {
             var inline = new Run(run.Text)
             {
-                FontSize = Math.Max(1, run.FontSize * scale),
+                FontSize = Math.Max(1, run.FontSize * effective),
                 FontFamily = FontResolver.Resolve(run.FontName),
                 FontWeight = run.Bold ? FontWeight.Bold : FontWeight.Normal,
                 FontStyle = run.Italic ? FontStyle.Italic : FontStyle.Normal,
@@ -346,7 +376,7 @@ public static class SlideRenderer
         if (para.Runs.Any(r => r.Shadow))
             text.Effect = new DropShadowEffect
             {
-                BlurRadius = 3 * scale, OffsetX = 0, OffsetY = 1.5 * scale,
+                BlurRadius = 3 * effective, OffsetX = 0, OffsetY = 1.5 * effective,
                 Color = Colors.Black, Opacity = 0.5
             };
 
@@ -354,7 +384,7 @@ public static class SlideRenderer
         {
             return new Border
             {
-                Margin = new Thickness(leftEdge * scale, para.SpaceBefore * scale, 0, para.SpaceAfter * scale),
+                Margin = new Thickness(leftEdge * effective, para.SpaceBefore * effective, 0, para.SpaceAfter * effective),
                 Child = text
             };
         }
@@ -362,10 +392,10 @@ public static class SlideRenderer
         var bulletBlock = new TextBlock
         {
             Text = para.Bullet.Glyph,
-            FontSize = Math.Max(1, baseSize * para.Bullet.SizePercent * scale),
+            FontSize = Math.Max(1, baseSize * para.Bullet.SizePercent * effective),
             FontFamily = FontResolver.Resolve(para.Bullet.FontName),
             Foreground = new SolidColorBrush(para.Bullet.Color ?? Colors.Black),
-            Width = hang * scale,
+            Width = hang * effective,
             HorizontalAlignment = HorizontalAlignment.Left
         };
 
@@ -376,7 +406,7 @@ public static class SlideRenderer
 
         return new Border
         {
-            Margin = new Thickness(leftEdge * scale, para.SpaceBefore * scale, 0, para.SpaceAfter * scale),
+            Margin = new Thickness(leftEdge * effective, para.SpaceBefore * effective, 0, para.SpaceAfter * effective),
             Child = row
         };
     }
@@ -428,42 +458,4 @@ public static class SlideRenderer
     public static void ClearCaches() => BitmapCache.Clear();
 }
 
-/// <summary>
-/// Scales its child down uniformly when the child's natural height exceeds
-/// <see cref="TargetHeight"/> — PowerPoint's "shrink text on overflow".
-/// </summary>
-public sealed class ShrinkToFit : Decorator
-{
-    public double TargetHeight { get; set; }
 
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        if (Child == null) return default;
-        Child.Measure(new Size(availableSize.Width, double.PositiveInfinity));
-        var natural = Child.DesiredSize;
-        var height = TargetHeight > 0 ? Math.Min(TargetHeight, availableSize.Height) : availableSize.Height;
-        return new Size(availableSize.Width, double.IsInfinity(height) ? natural.Height : height);
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        if (Child == null) return finalSize;
-        Child.Measure(new Size(finalSize.Width, double.PositiveInfinity));
-        var natural = Child.DesiredSize.Height;
-        var target = TargetHeight > 0 ? TargetHeight : finalSize.Height;
-
-        var factor = natural > target && natural > 0 ? Math.Max(0.2, target / natural) : 1.0;
-        if (factor < 1.0)
-        {
-            Child.RenderTransform = new ScaleTransform(factor, factor);
-            Child.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
-            Child.Arrange(new Rect(0, 0, finalSize.Width / factor, natural));
-        }
-        else
-        {
-            Child.RenderTransform = null;
-            Child.Arrange(new Rect(0, 0, finalSize.Width, Math.Max(natural, finalSize.Height)));
-        }
-        return finalSize;
-    }
-}

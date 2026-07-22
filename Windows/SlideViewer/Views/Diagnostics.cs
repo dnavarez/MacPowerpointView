@@ -32,7 +32,7 @@ public static class Diagnostics
         var report = new StringBuilder();
         report.AppendLine("SlideViewer thumbnail diagnostics");
         report.AppendLine($"Time           : {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        report.AppendLine($"Version        : 1.0.2");
+        report.AppendLine($"Version        : 1.0.3");
         report.AppendLine($"OS             : {Environment.OSVersion}");
         report.AppendLine();
 

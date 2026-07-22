@@ -43,7 +43,7 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "SlideViewer 1.0.2";
+        Title = "SlideViewer 1.0.3";
         MinWidth = 820;
         MinHeight = 520;
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -336,7 +336,7 @@ public sealed class MainWindow : Window
         {
             EndPresentation();
             _state.Open(path);
-            Title = $"{_state.FileName} — SlideViewer 1.0.2";
+            Title = $"{_state.FileName} — SlideViewer 1.0.3";
             ShowEmptyState(false);
             _presentButton.IsEnabled = true;
             BuildThumbnails();

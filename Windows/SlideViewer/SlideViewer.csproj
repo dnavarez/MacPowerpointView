@@ -12,8 +12,8 @@
     <Product>SlideViewer</Product>
     <AssemblyTitle>SlideViewer</AssemblyTitle>
     <Company>SlideViewer</Company>
-    <Version>1.0.2</Version>
-    <FileVersion>1.0.2.0</FileVersion>
+    <Version>1.0.3</Version>
+    <FileVersion>1.0.3.0</FileVersion>
     <ApplicationIcon>Assets/AppIcon.ico</ApplicationIcon>
     <!-- Trim is unsafe with Avalonia reflection; keep it off for reliability. -->
     <PublishTrimmed>false</PublishTrimmed>
