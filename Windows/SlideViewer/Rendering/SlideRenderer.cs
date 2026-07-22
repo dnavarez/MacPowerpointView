@@ -392,6 +392,24 @@ public static class SlideRenderer
         return bmp;
     }
 
+    /// <summary>Rasterises a slide to a bitmap.
+    ///
+    /// Thumbnails use this instead of live control trees: a sidebar holding one
+    /// full visual tree per slide (each retaining decoded background images)
+    /// makes selection and scrolling visibly stutter on large decks.</summary>
+    public static Bitmap RenderToBitmap(Slide slide, Size slideSize, double width)
+    {
+        var height = Math.Max(1, width * slideSize.Height / slideSize.Width);
+        var control = Render(slide, slideSize, width, height);
+        var size = new Size(width, height);
+        control.Measure(size);
+        control.Arrange(new Rect(size));
+        var target = new RenderTargetBitmap(
+            new PixelSize(Math.Max(1, (int)width), Math.Max(1, (int)height)), new Vector(96, 96));
+        target.Render(control);
+        return target;
+    }
+
     public static void ClearCaches() => BitmapCache.Clear();
 }
 

@@ -30,6 +30,7 @@ public sealed class MainWindow : Window
     private readonly Button _prevButton = new();
     private readonly Button _nextButton = new();
     private readonly Grid _consoleGrid = new();
+    private readonly CameraPanel _camera = new();
     private readonly Panel _emptyState = new();
     private readonly Grid _content = new();
     private bool _suppressSelection;
@@ -132,14 +133,23 @@ public sealed class MainWindow : Window
         nextPane.Children.Add(_nextLabel);
         nextPane.Children.Add(_nextStage);
 
+        // Right column: next slide above, camera below, each resizable.
+        var rightColumn = new Grid { RowDefinitions = new RowDefinitions("*,Auto,Auto") };
+        rightColumn.Children.Add(nextPane);
+        var vSplitter = new GridSplitter { Height = 6, Background = Brushes.Transparent };
+        Grid.SetRow(vSplitter, 1);
+        rightColumn.Children.Add(vSplitter);
+        Grid.SetRow(_camera, 2);
+        rightColumn.Children.Add(_camera);
+
         _consoleGrid.ColumnDefinitions = new ColumnDefinitions("*,Auto,340");
         _consoleGrid.Margin = new Thickness(16);
         _consoleGrid.Children.Add(nowPane);
         var splitter = new GridSplitter { Width = 6, Background = Brushes.Transparent };
         Grid.SetColumn(splitter, 1);
         _consoleGrid.Children.Add(splitter);
-        Grid.SetColumn(nextPane, 2);
-        _consoleGrid.Children.Add(nextPane);
+        Grid.SetColumn(rightColumn, 2);
+        _consoleGrid.Children.Add(rightColumn);
         _consoleGrid.IsVisible = false;
 
         // Bottom transport bar
@@ -313,14 +323,26 @@ public sealed class MainWindow : Window
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
+    private const double ThumbWidth = 150;
+
     private void BuildThumbnails()
     {
         if (_state.Presentation is not { } pres) return;
+
+        var thumbHeight = ThumbWidth * pres.Size.Height / pres.Size.Width;
         var items = new List<Control>();
+        var images = new List<Image>();
+
+        // Lightweight placeholders first so a large deck opens instantly; the
+        // bitmaps fill in on the dispatcher afterwards.
         for (int i = 0; i < pres.Slides.Count; i++)
         {
-            const double thumbWidth = 150;
-            var thumbHeight = thumbWidth * pres.Size.Height / pres.Size.Width;
+            var image = new Image
+            {
+                Width = ThumbWidth, Height = thumbHeight, Stretch = Stretch.Fill
+            };
+            images.Add(image);
+
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             row.Children.Add(new TextBlock
             {
@@ -334,15 +356,39 @@ public sealed class MainWindow : Window
             {
                 BorderBrush = new SolidColorBrush(Color.FromArgb(80, 200, 200, 200)),
                 BorderThickness = new Thickness(1),
-                Child = SlideRenderer.Render(pres.Slides[i], pres.Size, thumbWidth, thumbHeight)
+                Background = Brushes.White,
+                Child = image
             });
             items.Add(row);
         }
+
         _suppressSelection = true;
         _thumbs.ItemsSource = items;
         _thumbs.SelectedIndex = 0;
         _suppressSelection = false;
         OnStateChanged();
+
+        _thumbnailToken++;
+        RenderThumbnails(pres, images, 0, _thumbnailToken);
+    }
+
+    private int _thumbnailToken;
+
+    /// <summary>Rasterises thumbnails a few at a time so the UI stays responsive
+    /// while a long deck fills in.</summary>
+    private void RenderThumbnails(Models.Presentation pres, List<Image> images, int start, int token)
+    {
+        if (token != _thumbnailToken) return;   // superseded by a newer document
+        const int batch = 8;
+        var end = Math.Min(start + batch, images.Count);
+        for (int i = start; i < end; i++)
+        {
+            try { images[i].Source = SlideRenderer.RenderToBitmap(pres.Slides[i], pres.Size, ThumbWidth); }
+            catch { /* a thumbnail is cosmetic; never break opening a deck */ }
+        }
+        if (end < images.Count)
+            Dispatcher.UIThread.Post(() => RenderThumbnails(pres, images, end, token),
+                DispatcherPriority.Background);
     }
 
     private void OnStateChanged()
@@ -444,6 +490,7 @@ public sealed class MainWindow : Window
         _showWindow.Show();
 
         _presentButton.Content = "■  End";
+        _camera.RefreshDevices();
         _consoleGrid.IsVisible = true;
         _timer.Start();
         OnStateChanged();
@@ -461,6 +508,7 @@ public sealed class MainWindow : Window
         _showWindow = null;
         window?.Close();
 
+        _camera.Stop();
         _presentButton.Content = "▶  Present";
         _consoleGrid.IsVisible = false;
         OnStateChanged();
@@ -493,6 +541,28 @@ public sealed class MainWindow : Window
         _state.GoPrevious();
         EndPresentation();
         _state.GoTo(0);
+    }
+
+    /// <summary>Times the per-slide work so optimisation targets are measured.</summary>
+    public void RunTiming()
+    {
+        if (_state.Presentation is not { } pres) return;
+        var sw = new System.Diagnostics.Stopwatch();
+
+        sw.Restart();
+        for (int i = 0; i < Math.Min(20, pres.Slides.Count); i++)
+            SlideRenderer.Render(pres.Slides[i], pres.Size, 900, 506);
+        Console.WriteLine($"TIMING render-20-slides: {sw.ElapsedMilliseconds}ms ({sw.ElapsedMilliseconds / 20.0:F1}ms each)");
+
+        sw.Restart();
+        for (int i = 0; i < Math.Min(20, pres.Slides.Count); i++) _state.GoTo(i);
+        Console.WriteLine($"TIMING goto-20-slides(full UI): {sw.ElapsedMilliseconds}ms ({sw.ElapsedMilliseconds / 20.0:F1}ms each)");
+
+        sw.Restart();
+        var thumbH = 150.0 * pres.Size.Height / pres.Size.Width;
+        for (int i = 0; i < Math.Min(50, pres.Slides.Count); i++)
+            SlideRenderer.Render(pres.Slides[i], pres.Size, 150, thumbH);
+        Console.WriteLine($"TIMING thumbnails-50: {sw.ElapsedMilliseconds}ms");
     }
 
     protected override void OnResized(WindowResizedEventArgs e)

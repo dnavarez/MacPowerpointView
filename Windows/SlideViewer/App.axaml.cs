@@ -38,6 +38,7 @@ public partial class App : Application
                     w.Show();
                     if (deck != null && File.Exists(deck)) w.OpenFile(deck);
                     w.RunSelfTest();
+                    if (args.Contains("--timing")) w.RunTiming();
                     Console.WriteLine("SELFTEST OK");
                 }
                 catch (Exception ex)

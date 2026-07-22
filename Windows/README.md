@@ -52,11 +52,11 @@ autoshapes with solid/gradient/picture fills; group shapes and connectors;
 placeholder, background and shape inheritance from layouts and masters; theme
 colors and fonts; click-triggered animation builds (including
 paragraph-by-paragraph); thumbnail navigator; and presentation mode on a second
-display with a presenter console (current/next slide, build counter, timer).
+display with a presenter console (current/next slide, build counter, elapsed
+timer, and a camera preview with device selection).
 
 ## Differences from the macOS build
 
-- **No camera panel** in the presenter console (macOS-only feature for now).
 - **Legacy `.ppt`** files are not converted; save them as `.pptx` first.
 - Extraction reads directly from the archive, so the macOS-only stored-permission
   workaround is unnecessary here.
